@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 
 type SizeGroup = 'A' | 'B' | 'card' | 'book';
 type TitlePos =
@@ -32,6 +32,25 @@ type EditorSnapshot = {
   titlePos: TitlePos;
 };
 
+type MemoRecord = {
+  id: string;
+  name: string;
+  snapshot: EditorSnapshot;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type PersistedMemoStore = {
+  version: 1;
+  activeMemoId: string;
+  records: MemoRecord[];
+};
+
+type SimpleImportPayload = {
+  title: string;
+  cards: string[];
+};
+
 const A4_W72 = 595;
 const A4_H72 = 842;
 const A4_W300 = 2480;
@@ -40,6 +59,11 @@ const MM72 = 25.4 / 72;
 const MM300 = 25.4 / 300;
 const CONTENT_MARGIN_RATIO = 0.08;
 const HISTORY_LIMIT = 200;
+const SIDEBAR_W = 230;
+const BULK_PANEL_W = 280;
+const PANEL_MIN_W = 180;
+const PANEL_MAX_W = 460;
+const MEMO_STORAGE_KEY = 'nine-grid-card-memo.v1';
 
 function snapshotsEqual(a: EditorSnapshot, b: EditorSnapshot) {
   if (a.currentPt !== b.currentPt) return false;
@@ -109,6 +133,210 @@ const FONT_FAMILY = {
   serif: "'Noto Serif JP', serif",
 } satisfies Record<FontType, string>;
 
+function createMemoId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildDefaultSnapshot(): EditorSnapshot {
+  const defaultSize = SIZES.find((item) => item.key === 'B6') ?? SIZES[0];
+  return {
+    currentSize: { ...defaultSize },
+    currentPt: 5,
+    currentFont: 'sans',
+    cards: [...SAMPLE_TEXTS],
+    titleText: 'ページタイトル',
+    titleVisible: true,
+    titlePos: 'top-left',
+  };
+}
+
+function normalizeSnapshot(input: unknown): EditorSnapshot {
+  const fallback = buildDefaultSnapshot();
+  if (!input || typeof input !== 'object') return fallback;
+
+  const candidate = input as Partial<EditorSnapshot>;
+  const rawSize = candidate.currentSize;
+  let nextSize = fallback.currentSize;
+
+  if (rawSize && typeof rawSize === 'object') {
+    const size = rawSize as Partial<PaperSize>;
+    const key = typeof size.key === 'string' ? size.key : fallback.currentSize.key;
+    const preset = SIZES.find((item) => item.key === key);
+    if (preset) {
+      nextSize = { ...preset };
+    } else if (
+      typeof size.label === 'string' &&
+      typeof size.w72 === 'number' &&
+      typeof size.h72 === 'number' &&
+      typeof size.w300 === 'number' &&
+      typeof size.h300 === 'number' &&
+      typeof size.mm === 'string'
+    ) {
+      nextSize = {
+        key,
+        label: size.label,
+        w72: size.w72,
+        h72: size.h72,
+        w300: size.w300,
+        h300: size.h300,
+        mm: size.mm,
+      };
+    }
+  }
+
+  const nextCards = Array.from({ length: 9 }, (_, index) => {
+    const value = Array.isArray(candidate.cards) ? candidate.cards[index] : undefined;
+    return typeof value === 'string' ? value : fallback.cards[index];
+  });
+
+  const titlePosCandidate = candidate.titlePos;
+  const nextTitlePos: TitlePos =
+    typeof titlePosCandidate === 'string' && TITLE_POSITIONS.some((item) => item.value === titlePosCandidate)
+      ? titlePosCandidate
+      : fallback.titlePos;
+
+  return {
+    currentSize: nextSize,
+    currentPt: typeof candidate.currentPt === 'number' ? candidate.currentPt : fallback.currentPt,
+    currentFont: candidate.currentFont === 'serif' ? 'serif' : 'sans',
+    cards: nextCards,
+    titleText: typeof candidate.titleText === 'string' ? candidate.titleText : fallback.titleText,
+    titleVisible: typeof candidate.titleVisible === 'boolean' ? candidate.titleVisible : fallback.titleVisible,
+    titlePos: nextTitlePos,
+  };
+}
+
+function createMemoRecord(snapshot?: EditorSnapshot, name?: string): MemoRecord {
+  const now = Date.now();
+  return {
+    id: createMemoId(),
+    name: name?.trim() ? name.trim() : 'メモ 1',
+    snapshot: normalizeSnapshot(snapshot ?? buildDefaultSnapshot()),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function createNextMemoName(records: MemoRecord[]) {
+  let index = 1;
+  while (records.some((record) => record.name === `メモ ${index}`)) {
+    index += 1;
+  }
+  return `メモ ${index}`;
+}
+
+function normalizeMemoStore(input: unknown): PersistedMemoStore | null {
+  if (!input || typeof input !== 'object') return null;
+  const parsed = input as Partial<PersistedMemoStore>;
+  if (parsed.version !== 1 || !Array.isArray(parsed.records)) return null;
+
+  const records = parsed.records
+    .map((entry, index) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const candidate = entry as Partial<MemoRecord>;
+      const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : `メモ ${index + 1}`;
+      const id = typeof candidate.id === 'string' && candidate.id ? candidate.id : createMemoId();
+      return {
+        id,
+        name,
+        snapshot: normalizeSnapshot(candidate.snapshot),
+        createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
+        updatedAt: typeof candidate.updatedAt === 'number' ? candidate.updatedAt : Date.now(),
+      } satisfies MemoRecord;
+    })
+    .filter((record): record is MemoRecord => !!record);
+
+  if (records.length === 0) return null;
+
+  const parsedActiveId = typeof parsed.activeMemoId === 'string' ? parsed.activeMemoId : records[0].id;
+  const activeMemoId = records.some((record) => record.id === parsedActiveId) ? parsedActiveId : records[0].id;
+
+  return {
+    version: 1,
+    activeMemoId,
+    records,
+  };
+}
+
+function normalizeCards(input: unknown) {
+  return Array.from({ length: 9 }, (_, index) => {
+    if (!Array.isArray(input)) return '';
+    const value = input[index];
+    return typeof value === 'string' ? value : '';
+  });
+}
+
+function extractSimpleImportPayload(input: unknown): SimpleImportPayload | null {
+  if (!input || typeof input !== 'object') return null;
+
+  const raw = input as {
+    title?: unknown;
+    cards?: unknown;
+    cells?: unknown;
+    data?: { title?: unknown; cards?: unknown; cells?: unknown };
+    memos?: Array<{ data?: { title?: unknown; cards?: unknown; cells?: unknown } }>;
+  };
+
+  if (typeof raw.title === 'string') {
+    return {
+      title: raw.title,
+      cards: normalizeCards(raw.cards ?? raw.cells),
+    };
+  }
+
+  if (raw.data && typeof raw.data === 'object' && typeof raw.data.title === 'string') {
+    return {
+      title: raw.data.title,
+      cards: normalizeCards(raw.data.cards ?? raw.data.cells),
+    };
+  }
+
+  const firstMemoData = Array.isArray(raw.memos) ? raw.memos[0]?.data : undefined;
+  if (firstMemoData && typeof firstMemoData.title === 'string') {
+    return {
+      title: firstMemoData.title,
+      cards: normalizeCards(firstMemoData.cards ?? firstMemoData.cells),
+    };
+  }
+
+  return null;
+}
+
+function buildImportTemplate(title: string, cards: string[]) {
+  const payload: SimpleImportPayload = {
+    title,
+    cards: normalizeCards(cards),
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+function loadMemoStore(): { records: MemoRecord[]; activeMemoId: string } {
+  const fallbackRecord = createMemoRecord(buildDefaultSnapshot(), 'メモ 1');
+
+  if (typeof window === 'undefined') {
+    return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
+  }
+
+  const raw = window.localStorage.getItem(MEMO_STORAGE_KEY);
+  if (!raw) {
+    return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const normalized = normalizeMemoStore(parsed);
+    if (!normalized) {
+      return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
+    }
+    return { records: normalized.records, activeMemoId: normalized.activeMemoId };
+  } catch {
+    return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
+  }
+}
+
 function ptToScreenPx(pt: number) {
   return pt * (96 / 72);
 }
@@ -119,17 +347,30 @@ function normalizeScale(value: number) {
 }
 
 function App() {
-  const [currentSize, setCurrentSize] = useState<PaperSize>(SIZES.find((item) => item.key === 'B6')!);
-  const [currentPt, setCurrentPt] = useState(5);
-  const [currentFont, setCurrentFont] = useState<FontType>('sans');
-  const [cards, setCards] = useState<string[]>(SAMPLE_TEXTS);
+  const initialMemoStore = useMemo(() => loadMemoStore(), []);
+  const initialSnapshot = useMemo(() => {
+    const current = initialMemoStore.records.find((item) => item.id === initialMemoStore.activeMemoId);
+    return current?.snapshot ?? buildDefaultSnapshot();
+  }, [initialMemoStore]);
+
+  const [memoRecords, setMemoRecords] = useState<MemoRecord[]>(initialMemoStore.records);
+  const [activeMemoId, setActiveMemoId] = useState(initialMemoStore.activeMemoId);
+
+  const [currentSize, setCurrentSize] = useState<PaperSize>(initialSnapshot.currentSize);
+  const [currentPt, setCurrentPt] = useState(initialSnapshot.currentPt);
+  const [currentFont, setCurrentFont] = useState<FontType>(initialSnapshot.currentFont);
+  const [cards, setCards] = useState<string[]>(initialSnapshot.cards);
   const [activeEditIndex, setActiveEditIndex] = useState<number | null>(null);
   const [titleEditing, setTitleEditing] = useState(false);
-  const [titleText, setTitleText] = useState('ページタイトル');
-  const [titleVisible, setTitleVisible] = useState(true);
-  const [titlePos, setTitlePos] = useState<TitlePos>('top-left');
+  const [titleText, setTitleText] = useState(initialSnapshot.titleText);
+  const [titleVisible, setTitleVisible] = useState(initialSnapshot.titleVisible);
+  const [titlePos, setTitlePos] = useState<TitlePos>(initialSnapshot.titlePos);
   const [scalePct, setScalePct] = useState(100);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_W);
+  const [bulkPanelWidth, setBulkPanelWidth] = useState(BULK_PANEL_W);
+  const [activeResizer, setActiveResizer] = useState<'left' | 'right' | null>(null);
+  const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
+  const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('PDF生成中…');
   const [customW, setCustomW] = useState('');
@@ -139,8 +380,25 @@ function App() {
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [spacePanReady, setSpacePanReady] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
+  const [importPopupOpen, setImportPopupOpen] = useState(false);
+  const [importJsonText, setImportJsonText] = useState('');
+  const [importError, setImportError] = useState('');
+  const [memoManagePopupOpen, setMemoManagePopupOpen] = useState(false);
+  const [deleteConfirmPopupOpen, setDeleteConfirmPopupOpen] = useState(false);
+  const [memoCreatePopupOpen, setMemoCreatePopupOpen] = useState(false);
+  const [memoCreateMode, setMemoCreateMode] = useState<'new' | 'duplicate'>('new');
+  const [memoCreateName, setMemoCreateName] = useState('');
+  const [selectedMemoIds, setSelectedMemoIds] = useState<string[]>([]);
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
+  const [switchTargetMemoId, setSwitchTargetMemoId] = useState<string | null>(null);
+  const [memoSortMode, setMemoSortMode] = useState<'recent' | 'name'>('recent');
+  const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
+  const [editingMemoName, setEditingMemoName] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [topbarDropdownOpen, setTopbarDropdownOpen] = useState(false);
 
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const topbarDropdownRef = useRef<HTMLDivElement | null>(null);
   const panStartRef = useRef({ x: 0, y: 0 });
   const panBaseRef = useRef({ x: 0, y: 0 });
   const pinchStartDistanceRef = useRef<number | null>(null);
@@ -150,6 +408,8 @@ function App() {
   const historyRef = useRef<EditorSnapshot[]>([]);
   const historyIndexRef = useRef(-1);
   const applyingHistoryRef = useRef(false);
+  const switchingMemoRef = useRef(false);
+  const panelResizeStartRef = useRef({ x: 0, width: 0 });
 
   const innerTop = Math.round((A4_H72 - currentSize.h72) / 2);
   const innerLeft = Math.round((A4_W72 - currentSize.w72) / 2);
@@ -158,6 +418,28 @@ function App() {
 
   const infoInner = currentSize.key === 'custom' ? `カスタム ${currentSize.mm}mm` : `${currentSize.label}(${currentSize.mm}mm)`;
   const infoFont = currentFont === 'sans' ? 'ゴシック' : '明朝';
+  const activeMemo = useMemo(() => memoRecords.find((item) => item.id === activeMemoId) ?? null, [memoRecords, activeMemoId]);
+  const sortedMemoRecords = useMemo(() => {
+    const copied = [...memoRecords];
+    if (memoSortMode === 'name') {
+      copied.sort((left, right) => left.name.localeCompare(right.name, 'ja'));
+      return copied;
+    }
+    copied.sort((left, right) => {
+      if (right.updatedAt !== left.updatedAt) return right.updatedAt - left.updatedAt;
+      return left.name.localeCompare(right.name, 'ja');
+    });
+    return copied;
+  }, [memoRecords, memoSortMode]);
+  const isMultiSelectMode = selectedMemoIds.length >= 2;
+  const layoutStyle = useMemo(
+    () =>
+      ({
+        '--sidebar-w': `${sidebarWidth}px`,
+        '--bulk-panel-w': `${bulkPanelWidth}px`,
+      }) as CSSProperties,
+    [bulkPanelWidth, sidebarWidth],
+  );
 
   const createSnapshot = useCallback(
     (): EditorSnapshot => ({
@@ -173,6 +455,22 @@ function App() {
   );
 
   const applySnapshot = useCallback((snapshot: EditorSnapshot) => {
+    applyingHistoryRef.current = true;
+    setCurrentSize({ ...snapshot.currentSize });
+    setCurrentPt(snapshot.currentPt);
+    setCurrentFont(snapshot.currentFont);
+    setCards([...snapshot.cards]);
+    setTitleText(snapshot.titleText);
+    setTitleVisible(snapshot.titleVisible);
+    setTitlePos(snapshot.titlePos);
+    setActiveEditIndex(null);
+    setTitleEditing(false);
+  }, []);
+
+  const loadMemoSnapshot = useCallback((snapshot: EditorSnapshot) => {
+    switchingMemoRef.current = true;
+    historyRef.current = [snapshot];
+    historyIndexRef.current = 0;
     applyingHistoryRef.current = true;
     setCurrentSize({ ...snapshot.currentSize });
     setCurrentPt(snapshot.currentPt);
@@ -204,6 +502,19 @@ function App() {
   useEffect(() => {
     const snapshot = createSnapshot();
 
+    if (switchingMemoRef.current) {
+      switchingMemoRef.current = false;
+      return;
+    }
+
+    setMemoRecords((prev) =>
+      prev.map((record) => {
+        if (record.id !== activeMemoId) return record;
+        if (snapshotsEqual(record.snapshot, snapshot)) return record;
+        return { ...record, snapshot, updatedAt: Date.now() };
+      }),
+    );
+
     if (historyIndexRef.current === -1) {
       historyRef.current = [snapshot];
       historyIndexRef.current = 0;
@@ -226,23 +537,46 @@ function App() {
 
     historyRef.current = nextHistory;
     historyIndexRef.current = nextHistory.length - 1;
-  }, [createSnapshot]);
+  }, [activeMemoId, createSnapshot]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const payload: PersistedMemoStore = {
+      version: 1,
+      activeMemoId,
+      records: memoRecords,
+    };
+    window.localStorage.setItem(MEMO_STORAGE_KEY, JSON.stringify(payload));
+  }, [activeMemoId, memoRecords]);
+
+  useEffect(() => {
+    if (memoRecords.length === 0) return;
+    if (memoRecords.some((record) => record.id === activeMemoId)) return;
+    const fallback = memoRecords[0];
+    setActiveMemoId(fallback.id);
+    loadMemoSnapshot(fallback.snapshot);
+  }, [activeMemoId, loadMemoSnapshot, memoRecords]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--card-font-size', `${ptToScreenPx(currentPt)}px`);
   }, [currentPt]);
 
   useEffect(() => {
-    document.body.classList.toggle('drawer-open', drawerOpen);
+    document.body.classList.toggle('settings-drawer-open', settingsDrawerOpen);
+    document.body.classList.toggle('bulk-drawer-open', bulkDrawerOpen);
     return () => {
-      document.body.classList.remove('drawer-open');
+      document.body.classList.remove('settings-drawer-open');
+      document.body.classList.remove('bulk-drawer-open');
     };
-  }, [drawerOpen]);
+  }, [bulkDrawerOpen, settingsDrawerOpen]);
 
   useEffect(() => {
     const onResize = () => {
       if (window.innerWidth > 900) {
-        setDrawerOpen(false);
+        setSettingsDrawerOpen(false);
+        setBulkDrawerOpen(false);
+      } else {
+        setActiveResizer(null);
       }
     };
     window.addEventListener('resize', onResize);
@@ -250,8 +584,41 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!activeResizer) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const deltaX = event.clientX - panelResizeStartRef.current.x;
+      if (activeResizer === 'left') {
+        const next = Math.min(Math.max(panelResizeStartRef.current.width + deltaX, PANEL_MIN_W), PANEL_MAX_W);
+        setSidebarWidth(next);
+        return;
+      }
+      const next = Math.min(Math.max(panelResizeStartRef.current.width - deltaX, PANEL_MIN_W), PANEL_MAX_W);
+      setBulkPanelWidth(next);
+    };
+
+    const handlePointerUp = () => {
+      setActiveResizer(null);
+    };
+
+    document.body.classList.add('panel-resizing');
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      document.body.classList.remove('panel-resizing');
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [activeResizer]);
+
+  useEffect(() => {
     const autoScale = () => {
-      const canvasWidth = window.innerWidth - 230 - 56;
+      const isMobile = window.innerWidth <= 900;
+      const sidePanels = isMobile ? 0 : sidebarWidth + bulkPanelWidth;
+      const canvasWidth = window.innerWidth - sidePanels - 56;
       const canvasHeight = window.innerHeight - 60;
       let pct = Math.floor(Math.min(canvasWidth / A4_W72, canvasHeight / A4_H72) * 100);
       pct = Math.min(Math.max(pct, 30), 300);
@@ -261,7 +628,17 @@ function App() {
     autoScale();
     window.addEventListener('resize', autoScale);
     return () => window.removeEventListener('resize', autoScale);
-  }, []);
+  }, [bulkPanelWidth, sidebarWidth]);
+
+  const startPanelResize = (side: 'left' | 'right', event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (window.innerWidth <= 900) return;
+    event.preventDefault();
+    panelResizeStartRef.current = {
+      x: event.clientX,
+      width: side === 'left' ? sidebarWidth : bulkPanelWidth,
+    };
+    setActiveResizer(side);
+  };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -284,7 +661,13 @@ function App() {
       }
 
       if (event.key === 'Escape') {
-        setDrawerOpen(false);
+        setSettingsDrawerOpen(false);
+        setBulkDrawerOpen(false);
+        setImportPopupOpen(false);
+        setMemoManagePopupOpen(false);
+        setDeleteConfirmPopupOpen(false);
+        setMemoCreatePopupOpen(false);
+        setTopbarDropdownOpen(false);
       }
 
       if ((event.ctrlKey || event.metaKey) && !isEditableTarget) {
@@ -325,6 +708,22 @@ function App() {
       window.removeEventListener('blur', onBlur);
     };
   }, [redoSnapshot, undoSnapshot]);
+
+  useEffect(() => {
+    if (!topbarDropdownOpen) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (topbarDropdownRef.current?.contains(target)) return;
+      setTopbarDropdownOpen(false);
+    };
+
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [topbarDropdownOpen]);
 
   useEffect(() => {
     const handleBeforePrint = () => {
@@ -489,13 +888,6 @@ function App() {
   };
 
   const handleCanvasTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
-    const target = event.target as HTMLElement;
-    if (target.closest('#previewZoom')) return;
-    if (target.closest('input, textarea, select, button')) return;
-    if (target.closest('#page-title')) return;
-    if (target.closest('.card-text')) return;
-    if (target.closest('[contenteditable="true"]')) return;
-
     if (event.touches.length >= 2) {
       const distance = getTouchDistance(event.touches);
       if (distance) {
@@ -503,12 +895,21 @@ function App() {
         pinchStartScaleRef.current = scalePct;
       }
       setIsPanning(false);
+      event.preventDefault();
       return;
     }
+
+    const target = event.target as HTMLElement;
+    if (target.closest('#previewZoom')) return;
+    if (target.closest('input, textarea, select, button')) return;
+    if (target.closest('#page-title')) return;
+    if (target.closest('.card-text')) return;
+    if (target.closest('[contenteditable="true"]')) return;
 
     if (event.touches.length === 1) {
       const touch = event.touches[0];
       startPan(touch.clientX, touch.clientY);
+      event.preventDefault();
     }
   };
 
@@ -521,6 +922,7 @@ function App() {
       const ratio = distance / startDistance;
       const nextScale = normalizeScale(Math.round(pinchStartScaleRef.current * ratio));
       setScalePct(nextScale);
+      event.preventDefault();
       return;
     }
 
@@ -529,6 +931,7 @@ function App() {
       const dx = touch.clientX - panStartRef.current.x;
       const dy = touch.clientY - panStartRef.current.y;
       setPanOffset({ x: panBaseRef.current.x + dx, y: panBaseRef.current.y + dy });
+      event.preventDefault();
     }
   };
 
@@ -553,6 +956,234 @@ function App() {
 
   const updateCard = (index: number, value: string) => {
     setCards((prev) => prev.map((item, idx) => (idx === index ? value : item)));
+  };
+
+  const toggleSettingsDrawer = () => {
+    setSettingsDrawerOpen((prev) => {
+      const next = !prev;
+      if (next) setBulkDrawerOpen(false);
+      return next;
+    });
+  };
+
+  const toggleBulkDrawer = () => {
+    setBulkDrawerOpen((prev) => {
+      const next = !prev;
+      if (next) setSettingsDrawerOpen(false);
+      return next;
+    });
+  };
+
+  const switchMemo = (memoId: string) => {
+    if (memoId === activeMemoId) return;
+    const target = memoRecords.find((record) => record.id === memoId);
+    if (!target) return;
+    setActiveMemoId(memoId);
+    loadMemoSnapshot(target.snapshot);
+  };
+
+  const createNewMemo = (name?: string) => {
+    const snapshot = buildDefaultSnapshot();
+    const nextName = name?.trim() ? name.trim() : createNextMemoName(memoRecords);
+    const record = createMemoRecord(snapshot, nextName);
+    setMemoRecords((prev) => [record, ...prev]);
+    setActiveMemoId(record.id);
+    loadMemoSnapshot(snapshot);
+  };
+
+  const duplicateMemo = (name?: string) => {
+    const baseName = activeMemo?.name ?? 'メモ';
+    const snapshot = createSnapshot();
+    const nextName = name?.trim() ? name.trim() : `${baseName} コピー`;
+    const record = createMemoRecord(snapshot, nextName);
+    setMemoRecords((prev) => [record, ...prev]);
+    setActiveMemoId(record.id);
+    loadMemoSnapshot(snapshot);
+  };
+
+  const openCreateMemoPopup = (mode: 'new' | 'duplicate') => {
+    setMemoCreateMode(mode);
+    const defaultName = mode === 'new' ? createNextMemoName(memoRecords) : `${activeMemo?.name ?? 'メモ'} コピー`;
+    setMemoCreateName(defaultName);
+    setMemoCreatePopupOpen(true);
+  };
+
+  const submitCreateMemo = () => {
+    const trimmedName = memoCreateName.trim();
+    if (!trimmedName) return;
+
+    if (memoCreateMode === 'new') {
+      createNewMemo(trimmedName);
+    } else {
+      duplicateMemo(trimmedName);
+    }
+
+    setMemoCreatePopupOpen(false);
+  };
+
+  const openImportDialog = () => {
+    setImportJsonText(buildImportTemplate(titleText, cards));
+    setImportError('');
+    setImportPopupOpen(true);
+  };
+
+  const openMemoManageDialog = () => {
+    setSelectedMemoIds([]);
+    setSwitchTargetMemoId(activeMemoId);
+    setDeleteError('');
+    setEditingMemoId(null);
+    setEditingMemoName('');
+    setDeleteConfirmPopupOpen(false);
+    setMemoManagePopupOpen(true);
+  };
+
+  const toggleMemoSelection = (memoId: string) => {
+    setSelectedMemoIds((prev) => (prev.includes(memoId) ? prev.filter((id) => id !== memoId) : [...prev, memoId]));
+    if (deleteError) setDeleteError('');
+  };
+
+  const askDeleteConfirmation = (targetIds: string[]) => {
+    if (targetIds.length === 0) {
+      setDeleteError('削除するメモを1件以上選択してください。');
+      return;
+    }
+    setPendingDeleteIds(targetIds);
+    setDeleteConfirmPopupOpen(true);
+  };
+
+  const closeDeletePopups = () => {
+    setMemoManagePopupOpen(false);
+    setDeleteConfirmPopupOpen(false);
+    setDeleteError('');
+    setPendingDeleteIds([]);
+    setSwitchTargetMemoId(null);
+  };
+
+  const closeDeleteConfirmOnly = () => {
+    setDeleteConfirmPopupOpen(false);
+    setPendingDeleteIds([]);
+  };
+
+  const switchFromSelection = () => {
+    if (!switchTargetMemoId) return;
+    switchMemo(switchTargetMemoId);
+    setMemoManagePopupOpen(false);
+    setSwitchTargetMemoId(null);
+    setDeleteError('');
+  };
+
+  const switchFromTopbarDropdown = (memoId: string) => {
+    setTopbarDropdownOpen(false);
+    switchMemo(memoId);
+  };
+
+  const deleteFromTopbarDropdown = (memoId: string) => {
+    setTopbarDropdownOpen(false);
+    askDeleteConfirmation([memoId]);
+  };
+
+  const startMemoNameEdit = (memoId: string, name: string) => {
+    setEditingMemoId(memoId);
+    setEditingMemoName(name);
+  };
+
+  const commitMemoNameEdit = () => {
+    if (!editingMemoId) return;
+    const nextName = editingMemoName.trim().slice(0, 40) || '無題メモ';
+    setMemoRecords((prev) =>
+      prev.map((record) => (record.id === editingMemoId ? { ...record, name: nextName, updatedAt: Date.now() } : record)),
+    );
+    setEditingMemoId(null);
+    setEditingMemoName('');
+  };
+
+  const cancelMemoNameEdit = () => {
+    setEditingMemoId(null);
+    setEditingMemoName('');
+  };
+
+  const executeDeleteMemos = () => {
+    const targetSet = new Set(pendingDeleteIds);
+    const remaining = memoRecords.filter((record) => !targetSet.has(record.id));
+
+    if (remaining.length === 0) {
+      const snapshot = buildDefaultSnapshot();
+      const record = createMemoRecord(snapshot, 'メモ 1');
+      setMemoRecords([record]);
+      setActiveMemoId(record.id);
+      loadMemoSnapshot(snapshot);
+      closeDeletePopups();
+      return;
+    }
+
+    const shouldSwitchActive = targetSet.has(activeMemoId);
+    setMemoRecords(remaining);
+    setSelectedMemoIds((prev) => prev.filter((id) => !targetSet.has(id)));
+    if (shouldSwitchActive) {
+      const nextActive = remaining[0];
+      setActiveMemoId(nextActive.id);
+      loadMemoSnapshot(nextActive.snapshot);
+    }
+
+    closeDeleteConfirmOnly();
+  };
+
+  const parseImportJson = () => {
+    try {
+      const parsed = JSON.parse(importJsonText);
+      const normalized = extractSimpleImportPayload(parsed);
+      if (!normalized) {
+        setImportError('`title` と `cards`（または `cells`）を含むJSONを入力してください。');
+        return null;
+      }
+
+      return normalized;
+    } catch {
+      setImportError('JSONの構文が不正です。カンマやクォートを確認してください。');
+      return null;
+    }
+  };
+
+  const importAsNewMemo = () => {
+    const normalized = parseImportJson();
+    if (!normalized) return;
+
+      const snapshot = buildDefaultSnapshot();
+      snapshot.titleText = normalized.title.slice(0, 80);
+      snapshot.cards = normalized.cards;
+
+      const nextMemoName = normalized.title.trim().slice(0, 40) || createNextMemoName(memoRecords);
+      const record = createMemoRecord(snapshot, nextMemoName);
+      setMemoRecords((prev) => [record, ...prev]);
+      setActiveMemoId(record.id);
+      loadMemoSnapshot(snapshot);
+
+      setImportPopupOpen(false);
+      setImportError('');
+  };
+
+  const importOverwriteCurrentMemo = () => {
+    const normalized = parseImportJson();
+    if (!normalized) return;
+
+    const titleValue = normalized.title.slice(0, 80);
+    setTitleText(titleValue);
+    setCards(normalized.cards);
+
+    setMemoRecords((prev) =>
+      prev.map((record) => {
+        if (record.id !== activeMemoId) return record;
+        const nextName = titleValue.trim().slice(0, 40) || record.name;
+        return {
+          ...record,
+          name: nextName,
+          updatedAt: Date.now(),
+        };
+      }),
+    );
+
+    setImportPopupOpen(false);
+    setImportError('');
   };
 
   const renderExportCanvas = (isWeb: boolean) => {
@@ -686,6 +1317,39 @@ function App() {
     }
   };
 
+  const bulkEditorPanel = (
+    <div className="bulk-editor-panel">
+      <div className="bulk-title">まとめて入力</div>
+      <div className="bulk-input-group">
+        <label className="bulk-input-label">ページタイトル</label>
+        <input
+          className="bulk-title-input"
+          type="text"
+          value={titleText}
+          onChange={(event) => setTitleText(event.target.value)}
+          maxLength={80}
+        />
+      </div>
+
+      <div className="bulk-input-grid">
+        {cards.map((text, index) => (
+          <div key={index} className="bulk-input-card">
+            <label className="bulk-input-label">カード {index + 1}</label>
+            <textarea
+              className="bulk-textarea"
+              value={text}
+              onChange={(event) => updateCard(index, event.target.value)}
+              onFocus={() => {
+                setActiveEditIndex(null);
+                setTitleEditing(false);
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <>
       <div className={`loading-overlay${loading ? ' show' : ''}`}>
@@ -693,24 +1357,292 @@ function App() {
         <div>{loadingMsg}</div>
       </div>
 
-      <button
-        className="drawer-toggle"
-        type="button"
-        aria-label="編集パネルを開く"
-        aria-controls="sidePanel"
-        aria-expanded={drawerOpen}
-        onClick={() => setDrawerOpen((prev) => !prev)}
-      >
-        編集
-      </button>
-      <div className="drawer-backdrop" aria-hidden={!drawerOpen} onClick={() => setDrawerOpen(false)} />
+      <div className={`import-popup-overlay${importPopupOpen ? ' show' : ''}`}>
+        <div className="import-popup" role="dialog" aria-modal="true" aria-label="JSONインポート">
+          <div className="import-popup-title">JSONインポート（タイトル + 9マス）</div>
+          <p className="import-popup-help">`title` と `cards` のみ反映します。新規作成か上書きを選択してください。</p>
+          <textarea
+            className="import-json-input"
+            value={importJsonText}
+            onChange={(event) => {
+              setImportJsonText(event.target.value);
+              if (importError) setImportError('');
+            }}
+          />
+          {importError ? <div className="import-popup-error">{importError}</div> : null}
+          <div className="import-popup-actions">
+            <button
+              className="toggle-btn"
+              type="button"
+              onClick={() => {
+                setImportPopupOpen(false);
+                setImportError('');
+              }}
+            >
+              キャンセル
+            </button>
+            <button className="toggle-btn" type="button" onClick={importOverwriteCurrentMemo}>
+              上書き
+            </button>
+            <button className="toggle-btn active" type="button" onClick={importAsNewMemo}>
+              新規作成
+            </button>
+          </div>
+        </div>
+      </div>
 
-      <div className="layout">
+      <div className={`import-popup-overlay${memoManagePopupOpen ? ' show' : ''}`}>
+        <div className="import-popup delete-popup" role="dialog" aria-modal="true" aria-label="メモ管理">
+          <div className="import-popup-title">メモ切り替え・管理</div>
+          <div className="memo-manage-toolbar">
+            <select
+              id="memoSortMode"
+              className="memo-sort-select"
+              value={memoSortMode}
+              onChange={(event) => setMemoSortMode(event.target.value === 'name' ? 'name' : 'recent')}
+            >
+              <option value="recent">最近使った順</option>
+              <option value="name">五十音順</option>
+            </select>
+            <button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('new')}>
+              新規作成
+            </button>
+            <button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('duplicate')}>
+              複製
+            </button>
+            <button
+              className={`toggle-btn${isMultiSelectMode ? ' active' : ''}`}
+              type="button"
+              onClick={() => askDeleteConfirmation(selectedMemoIds)}
+              disabled={!isMultiSelectMode}
+            >
+              まとめて削除
+            </button>
+          </div>
+          <div className="delete-list">
+            {sortedMemoRecords.map((record) => {
+              const selected = selectedMemoIds.includes(record.id);
+              const editing = editingMemoId === record.id;
+              return (
+                <div
+                  key={record.id}
+                  className={`memo-manage-row${selected ? ' selected' : ''}${switchTargetMemoId === record.id ? ' switch-target' : ''}`}
+                  onClick={() => setSwitchTargetMemoId(record.id)}
+                >
+                  <label
+                    className="memo-select-check"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                    }}
+                  >
+                    <input type="checkbox" checked={selected} onChange={() => toggleMemoSelection(record.id)} />
+                  </label>
+                  <div className="memo-manage-left">
+                    {editing ? (
+                      <input
+                        className="memo-name-inline"
+                        type="text"
+                        value={editingMemoName}
+                        maxLength={40}
+                        autoFocus
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => setEditingMemoName(event.target.value)}
+                        onBlur={commitMemoNameEdit}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            commitMemoNameEdit();
+                          }
+                          if (event.key === 'Escape') {
+                            event.preventDefault();
+                            cancelMemoNameEdit();
+                          }
+                        }}
+                      />
+                    ) : (
+                      <span className="memo-name-text">{record.name}</span>
+                    )}
+                  </div>
+                  <div className="memo-row-actions">
+                    <button
+                      className="toggle-btn memo-row-icon-btn"
+                      type="button"
+                      aria-label="このメモ名を編集"
+                      title="名前を編集"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startMemoNameEdit(record.id, record.name);
+                      }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      className="toggle-btn memo-row-icon-btn"
+                      type="button"
+                      aria-label="このメモを削除"
+                      title="削除"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        askDeleteConfirmation([record.id]);
+                      }}
+                    >
+                      🗑
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {deleteError ? <div className="import-popup-error">{deleteError}</div> : null}
+          <div className="import-popup-actions two-col">
+            <button className="toggle-btn" type="button" onClick={closeDeletePopups}>
+              キャンセル
+            </button>
+            <button
+              className={`toggle-btn${switchTargetMemoId ? ' active' : ''}`}
+              type="button"
+              onClick={switchFromSelection}
+              disabled={!switchTargetMemoId}
+            >
+              切り替え
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className={`import-popup-overlay${deleteConfirmPopupOpen ? ' show' : ''}`}>
+        <div className="import-popup delete-confirm-popup" role="dialog" aria-modal="true" aria-label="削除確認">
+          <div className="import-popup-title">削除の確認</div>
+          <p className="import-popup-help">選択中の {pendingDeleteIds.length} 件を削除します。よろしいですか？</p>
+          <div className="import-popup-actions two-col">
+            <button className="toggle-btn" type="button" onClick={closeDeleteConfirmOnly}>
+              キャンセル
+            </button>
+            <button className="toggle-btn active" type="button" onClick={executeDeleteMemos}>
+              削除する
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className={`import-popup-overlay${memoCreatePopupOpen ? ' show' : ''}`}>
+        <div className="import-popup create-memo-popup" role="dialog" aria-modal="true" aria-label="メモ作成">
+          <div className="import-popup-title">{memoCreateMode === 'new' ? '新規メモ作成' : '複製メモ作成'}</div>
+          <input
+            className="memo-create-input"
+            type="text"
+            value={memoCreateName}
+            maxLength={40}
+            autoFocus
+            onChange={(event) => setMemoCreateName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && memoCreateName.trim()) {
+                event.preventDefault();
+                submitCreateMemo();
+              }
+            }}
+          />
+          <div className="import-popup-actions two-col">
+            <button className="toggle-btn" type="button" onClick={() => setMemoCreatePopupOpen(false)}>
+              キャンセル
+            </button>
+            <button
+              className={`toggle-btn${memoCreateName.trim() ? ' active' : ''}`}
+              type="button"
+              onClick={submitCreateMemo}
+              disabled={!memoCreateName.trim()}
+            >
+              作成
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <button
+        className="drawer-toggle settings-toggle"
+        type="button"
+        aria-label="設定パネルを開く"
+        aria-controls="sidePanel"
+        aria-expanded={settingsDrawerOpen}
+        onClick={toggleSettingsDrawer}
+      >
+        設定
+      </button>
+      <button
+        className="drawer-toggle bulk-toggle"
+        type="button"
+        aria-label="一括入力パネルを開く"
+        aria-controls="bulkDrawerPanel"
+        aria-expanded={bulkDrawerOpen}
+        onClick={toggleBulkDrawer}
+      >
+        入力
+      </button>
+      <div
+        className={`drawer-backdrop${settingsDrawerOpen || bulkDrawerOpen ? ' show' : ''}`}
+        aria-hidden={!settingsDrawerOpen && !bulkDrawerOpen}
+        onClick={() => {
+          setSettingsDrawerOpen(false);
+          setBulkDrawerOpen(false);
+        }}
+      />
+
+      <div className="app-shell">
+        <header className="memo-topbar" aria-label="メモ管理バー">
+          <div className="memo-topbar-dropdown" ref={topbarDropdownRef}>
+            <button
+              className="memo-topbar-select"
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded={topbarDropdownOpen}
+              aria-label="メモ切り替え"
+              onClick={() => setTopbarDropdownOpen((prev) => !prev)}
+            >
+              <span className="memo-topbar-select-text">{activeMemo?.name ?? 'メモ 1'}</span>
+              <span className="memo-topbar-caret">▾</span>
+            </button>
+
+            <div className={`memo-topbar-dropdown-menu${topbarDropdownOpen ? ' show' : ''}`} role="listbox" aria-label="メモ一覧">
+              {memoRecords.map((record) => (
+                <div key={record.id} className={`memo-topbar-option${record.id === activeMemoId ? ' active' : ''}`}>
+                  <button className="memo-topbar-option-name" type="button" onClick={() => switchFromTopbarDropdown(record.id)}>
+                    {record.name}
+                  </button>
+                  <button
+                    className="memo-topbar-option-delete"
+                    type="button"
+                    aria-label="このメモを削除"
+                    title="削除"
+                    onClick={() => deleteFromTopbarDropdown(record.id)}
+                  >
+                    🗑
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <button className="toggle-btn memo-topbar-btn" onClick={openMemoManageDialog} type="button">
+            管理
+          </button>
+          <button className="toggle-btn memo-topbar-btn" onClick={() => openCreateMemoPopup('new')} type="button">
+            新規
+          </button>
+          <button className="toggle-btn memo-topbar-btn" onClick={() => openCreateMemoPopup('duplicate')} type="button">
+            複製
+          </button>
+          <button className="toggle-btn memo-topbar-btn" onClick={openImportDialog} type="button">
+            JSON
+          </button>
+        </header>
+
+        <div className={`layout${activeResizer ? ' is-resizing' : ''}`} style={layoutStyle}>
         <aside className="sidebar" id="sidePanel">
           <div className="sidebar-inner">
             <div>
               <div className="app-title">A4 カードレイアウト</div>
               <div className="app-info">
+                メモ：<em>{activeMemo?.name ?? 'メモ 1'}</em>
+                <br />
                 外：A4　内：<em>{infoInner}</em>
                 <br />
                 書体：<em>{infoFont}</em>　<em>{currentPt}pt</em>
@@ -816,6 +1748,7 @@ function App() {
               <div className="sec-label">フォントサイズ</div>
               <div className="slider-row">
                 <input
+                  className="ui-range"
                   type="range"
                   min={3}
                   max={24}
@@ -831,6 +1764,7 @@ function App() {
               <div className="sec-label">表示倍率</div>
               <div className="slider-row">
                 <input
+                  className="ui-range"
                   type="range"
                   min={50}
                   max={300}
@@ -858,6 +1792,13 @@ function App() {
             </div>
           </div>
         </aside>
+
+        <button
+          className="panel-resizer panel-resizer-left"
+          type="button"
+          aria-label="左パネル幅を変更"
+          onPointerDown={(event) => startPanelResize('left', event)}
+        />
 
         <main
           ref={canvasAreaRef}
@@ -960,6 +1901,7 @@ function App() {
 
           <div className="preview-zoom" id="previewZoom">
             <input
+              className="ui-range"
               type="range"
               min={50}
               max={300}
@@ -980,6 +1922,22 @@ function App() {
             </div>
           </div>
         </main>
+
+        <button
+          className="panel-resizer panel-resizer-right"
+          type="button"
+          aria-label="右パネル幅を変更"
+          onPointerDown={(event) => startPanelResize('right', event)}
+        />
+
+        <aside className="bulk-sidebar" id="bulkPanel">
+          {bulkEditorPanel}
+        </aside>
+
+        <aside className="bulk-drawer" id="bulkDrawerPanel">
+          {bulkEditorPanel}
+        </aside>
+      </div>
       </div>
     </>
   );
