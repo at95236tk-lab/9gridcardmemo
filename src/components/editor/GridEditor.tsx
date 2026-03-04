@@ -35,6 +35,11 @@ type GridEditorProps = {
   onBlurTitleEdit: () => void;
   onInputTitle: (value: string) => void;
   titleText: string;
+  currentPt: number;
+  fontPtMin: number;
+  fontPtMax: number;
+  fontPtStep: number;
+  onChangePt: (value: number) => void;
   scalePct: number;
   zoomMin: number;
   zoomMax: number;
@@ -77,6 +82,11 @@ export function GridEditor({
   onBlurTitleEdit,
   onInputTitle,
   titleText,
+  currentPt,
+  fontPtMin,
+  fontPtMax,
+  fontPtStep,
+  onChangePt,
   scalePct,
   zoomMin,
   zoomMax,
@@ -167,26 +177,31 @@ export function GridEditor({
         </div>
       </div>
 
-      <div className="preview-zoom" id="previewZoom">
-        <input
-          className="ui-range"
-          type="range"
-          min={zoomMin}
-          max={zoomMax}
-          step={zoomStep}
-          value={scalePct}
-          onChange={(event) => onChangeScale(normalizeScale(Number.parseInt(event.target.value, 10)))}
-        />
-        <div className="preview-zoom-input-wrap">
+      <div className="preview-controls">
+        <div className="preview-font-size" id="previewFontSize" aria-label="フォントサイズ">
           <input
-            type="number"
+            className="ui-range"
+            type="range"
+            min={fontPtMin}
+            max={fontPtMax}
+            step={fontPtStep}
+            value={currentPt}
+            onChange={(event) => onChangePt(Number.parseFloat(event.target.value))}
+          />
+          <span className="preview-font-size-value">{currentPt} pt</span>
+        </div>
+
+        <div className="preview-zoom" id="previewZoom">
+          <input
+            className="ui-range"
+            type="range"
             min={zoomMin}
             max={zoomMax}
             step={zoomStep}
             value={scalePct}
             onChange={(event) => onChangeScale(normalizeScale(Number.parseInt(event.target.value, 10)))}
           />
-          <span>%</span>
+          <span className="preview-zoom-value">{scalePct}%</span>
         </div>
       </div>
     </main>

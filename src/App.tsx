@@ -473,6 +473,7 @@ function App() {
   const handleCanvasMouseDown = (event: React.MouseEvent<HTMLElement>) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
+    if (target.closest('#previewFontSize')) return;
     if (target.closest('#previewZoom')) return;
     if (target.closest('input, textarea, select, button')) return;
     if (target.closest('#page-title')) return;
@@ -498,6 +499,7 @@ function App() {
 
   const handleCanvasWheel = (event: ReactWheelEvent<HTMLElement>) => {
     const target = event.target as HTMLElement;
+    if (target.closest('#previewFontSize')) return;
     if (target.closest('#previewZoom')) return;
     if (target.closest('input, textarea, select, button')) return;
     if (target.closest('#page-title')) return;
@@ -521,6 +523,7 @@ function App() {
     }
 
     const target = event.target as HTMLElement;
+    if (target.closest('#previewFontSize')) return;
     if (target.closest('#previewZoom')) return;
     if (target.closest('input, textarea, select, button')) return;
     if (target.closest('#page-title')) return;
@@ -1385,6 +1388,11 @@ function App() {
           onBlurTitleEdit={() => setTitleEditing(false)}
           onInputTitle={setTitleText}
           titleText={titleText}
+          currentPt={currentPt}
+          fontPtMin={UI_TOKENS.slider.fontPt.min}
+          fontPtMax={UI_TOKENS.slider.fontPt.max}
+          fontPtStep={UI_TOKENS.slider.fontPt.step}
+          onChangePt={setCurrentPt}
           scalePct={scalePct}
           zoomMin={UI_TOKENS.slider.zoom.min}
           zoomMax={UI_TOKENS.slider.zoom.max}
