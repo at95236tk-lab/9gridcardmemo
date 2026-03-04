@@ -110,6 +110,8 @@ function App() {
   const canvasAreaRef = useRef<HTMLDivElement | null>(null);
   const panStartRef = useRef({ x: 0, y: 0 });
   const panBaseRef = useRef({ x: 0, y: 0 });
+  const pinchStartDistanceRef = useRef<number | null>(null);
+  const pinchStartScaleRef = useRef(100);
 
   const innerTop = Math.round((A4_H72 - currentSize.h72) / 2);
   const innerLeft = Math.round((A4_W72 - currentSize.w72) / 2);
@@ -282,6 +284,15 @@ function App() {
     setIsPanning(true);
   };
 
+  const getTouchDistance = (touches: React.TouchList) => {
+    if (touches.length < 2) return null;
+    const first = touches[0];
+    const second = touches[1];
+    const dx = second.clientX - first.clientX;
+    const dy = second.clientY - first.clientY;
+    return Math.hypot(dx, dy);
+  };
+
   const handleCanvasMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
@@ -303,6 +314,72 @@ function App() {
 
   const handleMouseUp = () => {
     if (!isPanning) return;
+    setIsPanning(false);
+  };
+
+  const handleCanvasTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('#previewZoom')) return;
+    if (target.closest('input, textarea, select, button')) return;
+    if (target.closest('[contenteditable="true"]')) return;
+
+    if (event.touches.length >= 2) {
+      const distance = getTouchDistance(event.touches);
+      if (distance) {
+        pinchStartDistanceRef.current = distance;
+        pinchStartScaleRef.current = scalePct;
+      }
+      setIsPanning(false);
+      event.preventDefault();
+      return;
+    }
+
+    if (event.touches.length === 1) {
+      const touch = event.touches[0];
+      startPan(touch.clientX, touch.clientY);
+      event.preventDefault();
+    }
+  };
+
+  const handleCanvasTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length >= 2) {
+      const startDistance = pinchStartDistanceRef.current;
+      const distance = getTouchDistance(event.touches);
+      if (!startDistance || !distance) return;
+
+      const ratio = distance / startDistance;
+      const nextScale = normalizeScale(Math.round(pinchStartScaleRef.current * ratio));
+      setScalePct(nextScale);
+      event.preventDefault();
+      return;
+    }
+
+    if (event.touches.length === 1 && isPanning) {
+      const touch = event.touches[0];
+      const dx = touch.clientX - panStartRef.current.x;
+      const dy = touch.clientY - panStartRef.current.y;
+      setPanOffset({ x: panBaseRef.current.x + dx, y: panBaseRef.current.y + dy });
+      event.preventDefault();
+    }
+  };
+
+  const handleCanvasTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length >= 2) {
+      const distance = getTouchDistance(event.touches);
+      pinchStartDistanceRef.current = distance;
+      pinchStartScaleRef.current = scalePct;
+      return;
+    }
+
+    pinchStartDistanceRef.current = null;
+
+    if (event.touches.length === 1) {
+      const touch = event.touches[0];
+      startPan(touch.clientX, touch.clientY);
+      event.preventDefault();
+      return;
+    }
+
     setIsPanning(false);
   };
 
@@ -598,6 +675,10 @@ function App() {
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
+          onTouchStart={handleCanvasTouchStart}
+          onTouchMove={handleCanvasTouchMove}
+          onTouchEnd={handleCanvasTouchEnd}
+          onTouchCancel={handleCanvasTouchEnd}
         >
           <div
             className="scale-outer"
