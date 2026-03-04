@@ -30,7 +30,7 @@ import { LeftSidebar } from './components/layout/LeftSidebar';
 import { BulkEditorPanel } from './components/layout/BulkEditorPanel';
 import { GridEditor } from './components/editor/GridEditor';
 import { Button } from './components/atoms/Button';
-import { exportPrintPdf } from './services/exportPdf';
+import { exportPrintPdf, printGeneratedPdfInBrowser } from './services/exportPdf';
 import { exportWebPng } from './services/exportPng';
 
 function ptToScreenPx(pt: number) {
@@ -935,6 +935,28 @@ function App() {
     }
   };
 
+  const handleBrowserPrintViaPdf = async () => {
+    setLoadingMsg('印刷用(300dpi) PDFを準備して印刷プレビューを開いています...');
+    setLoading(true);
+
+    try {
+      await printGeneratedPdfInBrowser({
+        currentSize,
+        currentPt,
+        currentFont,
+        cards,
+        titleText,
+        titleVisible,
+        titlePos,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`ブラウザ印刷エラー: ${message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const buildPlainTextExport = () => {
     const normalizedTitle = titleText.trim() || '無題';
     const lines = [`タイトル: ${normalizedTitle}`, ''];
@@ -1335,7 +1357,7 @@ function App() {
           onExportPrintPdf={() => void handleExportPrintPdf()}
           onCopyPlainText={() => void handleCopyPlainText()}
           onCopyJson={() => void handleCopyJson()}
-          onPrintBrowser={() => window.print()}
+          onPrintBrowser={() => void handleBrowserPrintViaPdf()}
           customPxMin={UI_TOKENS.sizing.customPxMin}
           customMmMin={UI_TOKENS.sizing.customMmMin}
           customMmStep={UI_TOKENS.sizing.customMmStep}

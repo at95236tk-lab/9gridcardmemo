@@ -1234,43 +1234,6 @@ body.panel-resizing * {
   }
 }
 
-@media print {
-  .memo-topbar,
-  .drawer-toggle,
-  .drawer-backdrop,
-  .sidebar,
-  .bulk-sidebar,
-  .bulk-drawer,
-  .preview-controls {
-    display: none !important;
-  }
-
-  .layout {
-    display: block;
-  }
-
-  .canvas-area {
-    padding: 0;
-    display: block;
-    overflow: visible;
-  }
-
-  .scale-outer {
-    position: static !important;
-    width: auto !important;
-    height: auto !important;
-    transform: none !important;
-  }
-
-  .a4 {
-    position: relative !important;
-    transform: none !important;
-    box-shadow: none;
-    width: var(--token-size-a4-print-w) !important;
-    height: var(--token-size-a4-print-h) !important;
-  }
-}
-
 @media (max-width: 900px) {
   .layout {
     height: calc(var(--token-viewport-dh) - var(--topbar-h));
