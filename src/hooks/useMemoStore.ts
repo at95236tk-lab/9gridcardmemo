@@ -6,6 +6,8 @@ import { snapshotsEqual } from '../utils/snapshot';
 import { deleteRemoteMemos, listRemoteMemos, upsertRemoteMemos } from '../services/memoRemoteStorage';
 import { getMemoOwnerKey, loadMemoStore, saveMemoStore } from '../services/memoStorage';
 
+const REMOTE_SYNC_DEBOUNCE_MS = 1200;
+
 function isSameRecord(left: MemoRecord, right: MemoRecord) {
   if (left.id !== right.id) return false;
   if (left.name !== right.name) return false;
@@ -21,6 +23,7 @@ export function useMemoStore() {
   const previousSyncedRecordsRef = useRef(initialMemoStore.records);
   const remoteReadyRef = useRef(false);
   const syncQueueRef = useRef(Promise.resolve());
+  const syncDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const initialSnapshot = useMemo<EditorSnapshot>(() => {
     const current = initialMemoStore.records.find((item) => item.id === initialMemoStore.activeMemoId);
@@ -95,15 +98,28 @@ export function useMemoStore() {
     previousSyncedRecordsRef.current = nextRecords;
     if (upsertTargets.length === 0 && deleteTargets.length === 0) return;
 
-    syncQueueRef.current = syncQueueRef.current
-      .then(async () => {
-        await upsertRemoteMemos(ownerKey, upsertTargets);
-        await deleteRemoteMemos(ownerKey, deleteTargets);
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error('[useMemoStore] failed to sync memo records', message);
-      });
+    if (syncDebounceTimerRef.current) {
+      clearTimeout(syncDebounceTimerRef.current);
+    }
+
+    syncDebounceTimerRef.current = setTimeout(() => {
+      syncQueueRef.current = syncQueueRef.current
+        .then(async () => {
+          await upsertRemoteMemos(ownerKey, upsertTargets);
+          await deleteRemoteMemos(ownerKey, deleteTargets);
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error('[useMemoStore] failed to sync memo records', message);
+        });
+      syncDebounceTimerRef.current = null;
+    }, REMOTE_SYNC_DEBOUNCE_MS);
+
+    return () => {
+      if (!syncDebounceTimerRef.current) return;
+      clearTimeout(syncDebounceTimerRef.current);
+      syncDebounceTimerRef.current = null;
+    };
   }, [memoRecords, ownerKey]);
 
   return {
