@@ -1342,6 +1342,15 @@ body.panel-resizing * {
     top: calc(var(--topbar-h) + var(--token-space-5));
   }
 
+  .settings-toggle,
+  .bulk-toggle {
+    right: calc(var(--token-space-6) + env(safe-area-inset-right));
+  }
+
+  .bulk-toggle {
+    top: calc(var(--topbar-h) + var(--token-space-5) + var(--token-size-btn-h-md) + var(--token-space-2));
+  }
+
   .bulk-sidebar {
     display: none;
   }
@@ -1356,12 +1365,19 @@ body.panel-resizing * {
     left: auto;
     right: 0;
     height: calc(var(--token-viewport-dh) - var(--topbar-h));
-    background: var(--token-color-surface-frost);
+    background: color-mix(in srgb, var(--token-color-surface-frost) 85%, transparent);
     width: min(var(--token-viewport-drawer-w), var(--token-size-drawer-w));
     max-width: var(--token-size-drawer-w);
     transform: translateX(105%);
     transition: transform var(--token-duration-base) var(--token-ease-standard);
     z-index: 130;
+  }
+
+  .sidebar .s-btn:not(.active),
+  .sidebar .toggle-btn:not(.active),
+  .sidebar .apply-btn,
+  .sidebar .pos-btn:not(.active) {
+    border-color: var(--token-color-border-strong);
   }
 
   .bulk-drawer {
@@ -1371,7 +1387,7 @@ body.panel-resizing * {
     left: auto;
     right: 0;
     height: calc(var(--token-viewport-dh) - var(--topbar-h));
-    background: var(--token-color-surface-frost);
+    background: color-mix(in srgb, var(--token-color-surface-frost) 100%, transparent);
     width: min(var(--token-viewport-drawer-w), var(--token-size-drawer-w));
     max-width: var(--token-size-drawer-w);
     transform: translateX(105%);
