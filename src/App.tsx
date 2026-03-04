@@ -28,6 +28,7 @@ const A4_W300 = 2480;
 const A4_H300 = 3508;
 const MM72 = 25.4 / 72;
 const MM300 = 25.4 / 300;
+const CONTENT_MARGIN_RATIO = 0.08;
 
 const SIZES: PaperSize[] = [
   { key: 'A4', label: 'A4', w72: 595, h72: 842, w300: 2480, h300: 3508, mm: '210x297', group: 'A' },
@@ -91,7 +92,7 @@ function App() {
   const [currentPt, setCurrentPt] = useState(5);
   const [currentFont, setCurrentFont] = useState<FontType>('sans');
   const [cards, setCards] = useState<string[]>(SAMPLE_TEXTS);
-  const [editMode, setEditMode] = useState(false);
+  const [activeEditIndex, setActiveEditIndex] = useState<number | null>(null);
   const [titleText, setTitleText] = useState('ページタイトル');
   const [titleVisible, setTitleVisible] = useState(true);
   const [titlePos, setTitlePos] = useState<TitlePos>('top-left');
@@ -112,9 +113,11 @@ function App() {
   const panBaseRef = useRef({ x: 0, y: 0 });
   const pinchStartDistanceRef = useRef<number | null>(null);
   const pinchStartScaleRef = useRef(100);
+  const cardTextRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const innerTop = Math.round((A4_H72 - currentSize.h72) / 2);
   const innerLeft = Math.round((A4_W72 - currentSize.w72) / 2);
+  const cardMargin = (currentSize.w72 / 3) * CONTENT_MARGIN_RATIO;
   const scale = scalePct / 100;
 
   const infoInner = currentSize.key === 'custom' ? `カスタム ${currentSize.mm}mm` : `${currentSize.label}(${currentSize.mm}mm)`;
@@ -219,6 +222,35 @@ function App() {
     };
   }, [currentPt]);
 
+  useEffect(() => {
+    if (activeEditIndex === null) return;
+    const target = cardTextRefs.current[activeEditIndex];
+    if (!target) return;
+    requestAnimationFrame(() => {
+      target.focus();
+      const selection = window.getSelection();
+      if (!selection) return;
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+  }, [activeEditIndex]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.card-text')) return;
+      setActiveEditIndex(null);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  }, []);
+
   const sizeByGroup = useMemo(() => {
     const grouped = new Map<SizeGroup, PaperSize[]>();
     GROUPS.forEach((group) => grouped.set(group.key, []));
@@ -298,6 +330,7 @@ function App() {
     const target = event.target as HTMLElement;
     if (target.closest('#previewZoom')) return;
     if (target.closest('input, textarea, select, button')) return;
+    if (target.closest('.card-text')) return;
     if (target.closest('[contenteditable="true"]')) return;
 
     startPan(event.clientX, event.clientY);
@@ -321,6 +354,7 @@ function App() {
     const target = event.target as HTMLElement;
     if (target.closest('#previewZoom')) return;
     if (target.closest('input, textarea, select, button')) return;
+    if (target.closest('.card-text')) return;
     if (target.closest('[contenteditable="true"]')) return;
 
     if (event.touches.length >= 2) {
@@ -387,106 +421,132 @@ function App() {
     setCards((prev) => prev.map((item, idx) => (idx === index ? value : item)));
   };
 
-  const exportPDF = async (mode: 'web' | 'print') => {
-    const isWeb = mode === 'web';
+  const renderExportCanvas = (isWeb: boolean) => {
     const dpi = isWeb ? 72 : 300;
+    const renderScale = isWeb ? 4 : 1;
     const a4W = isWeb ? A4_W72 : A4_W300;
     const a4H = isWeb ? A4_H72 : A4_H300;
     const innerW = isWeb ? currentSize.w72 : currentSize.w300;
     const innerH = isWeb ? currentSize.h72 : currentSize.h300;
     const fontPx = currentPt * (dpi / 72);
     const ff = currentFont === 'sans' ? 'Noto Sans JP' : 'Noto Serif JP';
-    const fileName = isWeb ? 'card-layout-web-72dpi.pdf' : 'card-layout-print-300dpi.pdf';
 
-    setLoadingMsg(`${isWeb ? 'Web用(72dpi)' : '印刷用(300dpi)'} PDFを生成中...`);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(a4W * renderScale);
+    canvas.height = Math.round(a4H * renderScale);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas context が取得できませんでした');
+    }
+
+    if (renderScale !== 1) {
+      ctx.scale(renderScale, renderScale);
+    }
+
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, a4W, a4H);
+
+    const gx = Math.round((a4W - innerW) / 2);
+    const gy = Math.round((a4H - innerH) / 2);
+    const cw = innerW / 3;
+    const ch = innerH / 3;
+    const lw = isWeb ? 0.5 : 2;
+
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = lw;
+    ctx.strokeRect(gx + lw / 2, gy + lw / 2, innerW - lw, innerH - lw);
+    ctx.beginPath();
+    for (let col = 1; col < 3; col += 1) {
+      const x = gx + Math.round(cw * col);
+      ctx.moveTo(x, gy);
+      ctx.lineTo(x, gy + innerH);
+    }
+    for (let row = 1; row < 3; row += 1) {
+      const y = gy + Math.round(ch * row);
+      ctx.moveTo(gx, y);
+      ctx.lineTo(gx + innerW, y);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = '#1a1a1a';
+    ctx.font = `${fontPx}px "${ff}", sans-serif`;
+    ctx.textBaseline = 'top';
+
+    cards.forEach((text, index) => {
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      const cx = gx + col * cw;
+      const cy = gy + row * ch;
+      const lines = text.split('\n');
+      const lh = fontPx * 2.0;
+      const totalH = lines.length * lh;
+      const padX = cw * CONTENT_MARGIN_RATIO;
+      const padY = cw * CONTENT_MARGIN_RATIO;
+      const startX = cx + padX;
+      const startY = Math.max(cy + padY, cy + padY + (ch - padY * 2 - totalH) / 2);
+
+      lines.forEach((line, lineIndex) => {
+        let x = startX;
+        const y = startY + lineIndex * lh;
+        for (const char of line) {
+          ctx.fillText(char, x, y);
+          x += ctx.measureText(char).width + fontPx * 0.18;
+        }
+      });
+    });
+
+    const cleanedTitle = titleText.trim();
+    if (titleVisible && cleanedTitle) {
+      const tpx = currentPt * (dpi / 72);
+      const mgX = cw * CONTENT_MARGIN_RATIO;
+      const mgY = cw * CONTENT_MARGIN_RATIO;
+
+      ctx.font = `${tpx}px "${ff}", sans-serif`;
+      const isBottom = titlePos.startsWith('bottom');
+      const align = titlePos.includes('center') ? 'center' : titlePos.includes('right') ? 'right' : 'left';
+
+      ctx.textAlign = align;
+      ctx.textBaseline = isBottom ? 'bottom' : 'top';
+      const tx = align === 'center' ? gx + innerW / 2 : align === 'right' ? gx + innerW - mgX : gx + mgX;
+      const ty = isBottom ? gy + innerH - mgY : gy + mgY;
+      ctx.fillText(cleanedTitle, tx, ty);
+    }
+
+    return canvas;
+  };
+
+  const exportPrintPdf = async () => {
+    setLoadingMsg('印刷用(300dpi) PDFを生成中...');
     setLoading(true);
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     try {
-      const canvas = document.createElement('canvas');
-      canvas.width = a4W;
-      canvas.height = a4H;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        throw new Error('Canvas context が取得できませんでした');
-      }
-
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, a4W, a4H);
-
-      const gx = Math.round((a4W - innerW) / 2);
-      const gy = Math.round((a4H - innerH) / 2);
-      const cw = innerW / 3;
-      const ch = innerH / 3;
-      const lw = isWeb ? 0.5 : 2;
-
-      ctx.strokeStyle = '#333';
-      ctx.lineWidth = lw;
-      ctx.strokeRect(gx + lw / 2, gy + lw / 2, innerW - lw, innerH - lw);
-      ctx.beginPath();
-      for (let col = 1; col < 3; col += 1) {
-        const x = gx + Math.round(cw * col);
-        ctx.moveTo(x, gy);
-        ctx.lineTo(x, gy + innerH);
-      }
-      for (let row = 1; row < 3; row += 1) {
-        const y = gy + Math.round(ch * row);
-        ctx.moveTo(gx, y);
-        ctx.lineTo(gx + innerW, y);
-      }
-      ctx.stroke();
-
-      ctx.fillStyle = '#1a1a1a';
-      ctx.font = `${fontPx}px "${ff}", sans-serif`;
-      ctx.textBaseline = 'top';
-
-      cards.forEach((text, index) => {
-        const col = index % 3;
-        const row = Math.floor(index / 3);
-        const cx = gx + col * cw;
-        const cy = gy + row * ch;
-        const lines = text.split('\n');
-        const lh = fontPx * 2.0;
-        const totalH = lines.length * lh;
-        const totalW = Math.max(...lines.map((line) => ctx.measureText(line).width), 0);
-        const padX = cw * 0.05;
-        const padY = cw * 0.05;
-        const startX = Math.max(cx + padX, cx + padX + (cw - padX * 2 - totalW) / 2);
-        const startY = Math.max(cy + padY, cy + padY + (ch - padY * 2 - totalH) / 2);
-
-        lines.forEach((line, lineIndex) => {
-          let x = startX;
-          const y = startY + lineIndex * lh;
-          for (const char of line) {
-            ctx.fillText(char, x, y);
-            x += ctx.measureText(char).width + fontPx * 0.18;
-          }
-        });
-      });
-
-      const cleanedTitle = titleText.trim();
-      if (titleVisible && cleanedTitle) {
-        const tpx = currentPt * (dpi / 72);
-        const mgX = innerW * 0.025;
-        const mgY = innerH * 0.02;
-
-        ctx.font = `${tpx}px "${ff}", sans-serif`;
-        const isBottom = titlePos.startsWith('bottom');
-        const align = titlePos.includes('center') ? 'center' : titlePos.includes('right') ? 'right' : 'left';
-
-        ctx.textAlign = align;
-        ctx.textBaseline = isBottom ? 'bottom' : 'top';
-        const tx = align === 'center' ? gx + innerW / 2 : align === 'right' ? gx + innerW - mgX : gx + mgX;
-        const ty = isBottom ? gy + innerH - mgY : gy + mgY;
-        ctx.fillText(cleanedTitle, tx, ty);
-      }
-
+      const canvas = renderExportCanvas(false);
       const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 210, 297);
-      pdf.save(fileName);
+      pdf.save('card-layout-print-300dpi.pdf');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       window.alert(`PDF生成エラー: ${message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportWebPng = async () => {
+    setLoadingMsg('Web用(72dpi / 4x高精細) PNGを生成中...');
+    setLoading(true);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    try {
+      const canvas = renderExportCanvas(true);
+      const link = document.createElement('a');
+      link.href = canvas.toDataURL('image/png');
+      link.download = 'card-layout-web-72dpi.png';
+      link.click();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`PNG生成エラー: ${message}`);
     } finally {
       setLoading(false);
     }
@@ -649,15 +709,12 @@ function App() {
             </div>
 
             <div className="section">
-              <button className="action-btn" onClick={() => setEditMode((prev) => !prev)} type="button">
-                {editMode ? '✅ 編集完了' : '✏ テキスト編集'}
-              </button>
               <div className="pdf-group" style={{ marginTop: 4 }}>
-                <div className="pdf-label">PDF 書き出し</div>
-                <button className="action-btn" onClick={() => void exportPDF('web')} type="button">
-                  ⬇ Web 用（72dpi）
+                <div className="pdf-label">データ書き出し</div>
+                <button className="action-btn" onClick={() => void exportWebPng()} type="button">
+                  ⬇ Web 用 PNG（72dpi）
                 </button>
-                <button className="action-btn" onClick={() => void exportPDF('print')} type="button">
+                <button className="action-btn" onClick={() => void exportPrintPdf()} type="button">
                   ⬇ 印刷用（300dpi）
                 </button>
               </div>
@@ -704,13 +761,19 @@ function App() {
                 }}
               >
                 {cards.map((text, index) => (
-                  <div key={index} className={`card${editMode ? ' edit-mode' : ''}`}>
+                  <div key={index} className="card">
                     <div
+                      ref={(element) => {
+                        cardTextRefs.current[index] = element;
+                      }}
                       className="card-text"
                       data-placeholder="テキストを入力"
                       suppressContentEditableWarning
-                      contentEditable={editMode}
+                      contentEditable={activeEditIndex === index}
                       style={{ fontFamily: FONT_FAMILY[currentFont] }}
+                      onMouseDown={() => setActiveEditIndex(index)}
+                      onTouchStart={() => setActiveEditIndex(index)}
+                      onBlur={() => setActiveEditIndex((prev) => (prev === index ? null : prev))}
                       onInput={(event) => {
                         const value = (event.currentTarget.textContent ?? '').replace(/\r/g, '');
                         updateCard(index, value);
@@ -728,6 +791,9 @@ function App() {
                     display: titleVisible ? '' : 'none',
                     fontFamily: FONT_FAMILY[currentFont],
                     fontSize: `${ptToScreenPx(currentPt)}px`,
+                    padding: `0 ${cardMargin}px`,
+                    top: titlePos.startsWith('bottom') ? 'auto' : `${cardMargin}px`,
+                    bottom: titlePos.startsWith('bottom') ? `${cardMargin}px` : 'auto',
                   }}
                 >
                   {titleText}

@@ -453,8 +453,8 @@ body,
   border-bottom: 0.5px solid var(--border-col);
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 5%;
+  justify-content: flex-start;
+  padding: 8%;
   overflow: hidden;
 }
 
@@ -489,11 +489,7 @@ body,
   min-height: 1em;
 }
 
-.card.edit-mode:hover {
-  background: rgba(200, 169, 126, 0.05);
-}
-
-.card.edit-mode .card-text:focus {
+.card-text:focus {
   background: rgba(200, 169, 126, 0.08);
 }
 
@@ -501,7 +497,7 @@ body,
   position: absolute;
   left: 0;
   right: 0;
-  padding: 0 2.5%;
+  padding: 0;
   font-size: 7pt;
   color: #1a1a1a;
   letter-spacing: 0.12em;
@@ -514,38 +510,26 @@ body,
 }
 
 #page-title.top-left {
-  top: 2%;
-  bottom: auto;
   text-align: left;
 }
 
 #page-title.top-center {
-  top: 2%;
-  bottom: auto;
   text-align: center;
 }
 
 #page-title.top-right {
-  top: 2%;
-  bottom: auto;
   text-align: right;
 }
 
 #page-title.bottom-left {
-  bottom: 2%;
-  top: auto;
   text-align: left;
 }
 
 #page-title.bottom-center {
-  bottom: 2%;
-  top: auto;
   text-align: center;
 }
 
 #page-title.bottom-right {
-  bottom: 2%;
-  top: auto;
   text-align: right;
 }
 
