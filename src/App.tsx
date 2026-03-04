@@ -1,371 +1,73 @@
-import { jsPDF } from 'jspdf';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-
-type SizeGroup = 'A' | 'B' | 'card' | 'book';
-type TitlePos =
-  | 'top-left'
-  | 'top-center'
-  | 'top-right'
-  | 'bottom-left'
-  | 'bottom-center'
-  | 'bottom-right';
-type FontType = 'sans' | 'serif';
-
-type PaperSize = {
-  key: string;
-  label: string;
-  w72: number;
-  h72: number;
-  w300: number;
-  h300: number;
-  mm: string;
-  group?: SizeGroup;
-};
-
-type EditorSnapshot = {
-  currentSize: PaperSize;
-  currentPt: number;
-  currentFont: FontType;
-  cards: string[];
-  titleText: string;
-  titleVisible: boolean;
-  titlePos: TitlePos;
-};
-
-type MemoRecord = {
-  id: string;
-  name: string;
-  snapshot: EditorSnapshot;
-  createdAt: number;
-  updatedAt: number;
-};
-
-type PersistedMemoStore = {
-  version: 1;
-  activeMemoId: string;
-  records: MemoRecord[];
-};
-
-type SimpleImportPayload = {
-  title: string;
-  cards: string[];
-};
-
-const A4_W72 = 595;
-const A4_H72 = 842;
-const A4_W300 = 2480;
-const A4_H300 = 3508;
-const MM72 = 25.4 / 72;
-const MM300 = 25.4 / 300;
-const CONTENT_MARGIN_RATIO = 0.08;
-const HISTORY_LIMIT = 200;
-const SIDEBAR_W = 230;
-const BULK_PANEL_W = 280;
-const PANEL_MIN_W = 180;
-const PANEL_MAX_W = 460;
-const MEMO_STORAGE_KEY = 'nine-grid-card-memo.v1';
-
-function snapshotsEqual(a: EditorSnapshot, b: EditorSnapshot) {
-  if (a.currentPt !== b.currentPt) return false;
-  if (a.currentFont !== b.currentFont) return false;
-  if (a.titleText !== b.titleText) return false;
-  if (a.titleVisible !== b.titleVisible) return false;
-  if (a.titlePos !== b.titlePos) return false;
-  if (a.currentSize.key !== b.currentSize.key) return false;
-  if (a.currentSize.label !== b.currentSize.label) return false;
-  if (a.currentSize.w72 !== b.currentSize.w72) return false;
-  if (a.currentSize.h72 !== b.currentSize.h72) return false;
-  if (a.currentSize.w300 !== b.currentSize.w300) return false;
-  if (a.currentSize.h300 !== b.currentSize.h300) return false;
-  if (a.currentSize.mm !== b.currentSize.mm) return false;
-  if (a.cards.length !== b.cards.length) return false;
-  for (let index = 0; index < a.cards.length; index += 1) {
-    if (a.cards[index] !== b.cards[index]) return false;
-  }
-  return true;
-}
-
-const SIZES: PaperSize[] = [
-  { key: 'A4', label: 'A4', w72: 595, h72: 842, w300: 2480, h300: 3508, mm: '210x297', group: 'A' },
-  { key: 'A5', label: 'A5', w72: 420, h72: 595, w300: 1748, h300: 2480, mm: '148x210', group: 'A' },
-  { key: 'A6', label: 'A6', w72: 298, h72: 420, w300: 1240, h300: 1748, mm: '105x148', group: 'A' },
-  { key: 'A7', label: 'A7', w72: 210, h72: 298, w300: 874, h300: 1240, mm: '74x105', group: 'A' },
-  { key: 'B5', label: 'B5', w72: 516, h72: 729, w300: 2150, h300: 3035, mm: '182x257', group: 'B' },
-  { key: 'B6', label: 'B6', w72: 363, h72: 516, w300: 1512, h300: 2150, mm: '128x182', group: 'B' },
-  { key: 'B7', label: 'B7', w72: 258, h72: 363, w300: 1075, h300: 1512, mm: '91x128', group: 'B' },
-  { key: 'postcard', label: 'はがき', w72: 283, h72: 420, w300: 1181, h300: 1748, mm: '100x148', group: 'card' },
-  { key: 'l-size', label: 'L判', w72: 252, h72: 360, w300: 1051, h300: 1500, mm: '89x127', group: 'card' },
-  { key: 'bible', label: 'バイブル', w72: 269, h72: 482, w300: 1122, h300: 2008, mm: '95x170', group: 'book' },
-  { key: 'mini5', label: 'M5', w72: 176, h72: 298, w300: 732, h300: 1240, mm: '62x105', group: 'book' },
-  { key: 'hobo', label: 'ほぼ日', w72: 298, h72: 420, w300: 1240, h300: 1748, mm: '105x148', group: 'book' },
-];
-
-const SAMPLE_TEXTS = [
-  'お気に入りの言葉\nあるいは\nメモを\nここに',
-  '日付\n場所\nメモ',
-  'アイデア\nスケッチ\nキーワード',
-  'タスク一覧\n―\n□ 項目A\n□ 項目B',
-  '重要事項\n―\n覚えておく\nこと',
-  '連絡先\n名前\n電話番号\nメール',
-  'ルーティン\n朝 ___\n昼 ___\n夜 ___',
-  '目標\n―\n今週\n今月',
-  'メモ\n―\n自由に\n書いてください',
-];
-
-const TITLE_POSITIONS: { value: TitlePos; label: string }[] = [
-  { value: 'top-left', label: '左上' },
-  { value: 'top-center', label: '中央上' },
-  { value: 'top-right', label: '右上' },
-  { value: 'bottom-left', label: '左下' },
-  { value: 'bottom-center', label: '中央下' },
-  { value: 'bottom-right', label: '右下' },
-];
-
-const GROUPS: { key: SizeGroup; label: string }[] = [
-  { key: 'A', label: 'A 系' },
-  { key: 'B', label: 'B 系（JIS）' },
-  { key: 'card', label: '写真・はがき' },
-  { key: 'book', label: '手帳' },
-];
-
-const FONT_FAMILY = {
-  sans: "'Noto Sans JP', sans-serif",
-  serif: "'Noto Serif JP', serif",
-} satisfies Record<FontType, string>;
-
-function createMemoId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function buildDefaultSnapshot(): EditorSnapshot {
-  const defaultSize = SIZES.find((item) => item.key === 'B6') ?? SIZES[0];
-  return {
-    currentSize: { ...defaultSize },
-    currentPt: 5,
-    currentFont: 'sans',
-    cards: [...SAMPLE_TEXTS],
-    titleText: 'ページタイトル',
-    titleVisible: true,
-    titlePos: 'top-left',
-  };
-}
-
-function normalizeSnapshot(input: unknown): EditorSnapshot {
-  const fallback = buildDefaultSnapshot();
-  if (!input || typeof input !== 'object') return fallback;
-
-  const candidate = input as Partial<EditorSnapshot>;
-  const rawSize = candidate.currentSize;
-  let nextSize = fallback.currentSize;
-
-  if (rawSize && typeof rawSize === 'object') {
-    const size = rawSize as Partial<PaperSize>;
-    const key = typeof size.key === 'string' ? size.key : fallback.currentSize.key;
-    const preset = SIZES.find((item) => item.key === key);
-    if (preset) {
-      nextSize = { ...preset };
-    } else if (
-      typeof size.label === 'string' &&
-      typeof size.w72 === 'number' &&
-      typeof size.h72 === 'number' &&
-      typeof size.w300 === 'number' &&
-      typeof size.h300 === 'number' &&
-      typeof size.mm === 'string'
-    ) {
-      nextSize = {
-        key,
-        label: size.label,
-        w72: size.w72,
-        h72: size.h72,
-        w300: size.w300,
-        h300: size.h300,
-        mm: size.mm,
-      };
-    }
-  }
-
-  const nextCards = Array.from({ length: 9 }, (_, index) => {
-    const value = Array.isArray(candidate.cards) ? candidate.cards[index] : undefined;
-    return typeof value === 'string' ? value : fallback.cards[index];
-  });
-
-  const titlePosCandidate = candidate.titlePos;
-  const nextTitlePos: TitlePos =
-    typeof titlePosCandidate === 'string' && TITLE_POSITIONS.some((item) => item.value === titlePosCandidate)
-      ? titlePosCandidate
-      : fallback.titlePos;
-
-  return {
-    currentSize: nextSize,
-    currentPt: typeof candidate.currentPt === 'number' ? candidate.currentPt : fallback.currentPt,
-    currentFont: candidate.currentFont === 'serif' ? 'serif' : 'sans',
-    cards: nextCards,
-    titleText: typeof candidate.titleText === 'string' ? candidate.titleText : fallback.titleText,
-    titleVisible: typeof candidate.titleVisible === 'boolean' ? candidate.titleVisible : fallback.titleVisible,
-    titlePos: nextTitlePos,
-  };
-}
-
-function createMemoRecord(snapshot?: EditorSnapshot, name?: string): MemoRecord {
-  const now = Date.now();
-  return {
-    id: createMemoId(),
-    name: name?.trim() ? name.trim() : 'メモ 1',
-    snapshot: normalizeSnapshot(snapshot ?? buildDefaultSnapshot()),
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function createNextMemoName(records: MemoRecord[]) {
-  let index = 1;
-  while (records.some((record) => record.name === `メモ ${index}`)) {
-    index += 1;
-  }
-  return `メモ ${index}`;
-}
-
-function normalizeMemoStore(input: unknown): PersistedMemoStore | null {
-  if (!input || typeof input !== 'object') return null;
-  const parsed = input as Partial<PersistedMemoStore>;
-  if (parsed.version !== 1 || !Array.isArray(parsed.records)) return null;
-
-  const records = parsed.records
-    .map((entry, index) => {
-      if (!entry || typeof entry !== 'object') return null;
-      const candidate = entry as Partial<MemoRecord>;
-      const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : `メモ ${index + 1}`;
-      const id = typeof candidate.id === 'string' && candidate.id ? candidate.id : createMemoId();
-      return {
-        id,
-        name,
-        snapshot: normalizeSnapshot(candidate.snapshot),
-        createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
-        updatedAt: typeof candidate.updatedAt === 'number' ? candidate.updatedAt : Date.now(),
-      } satisfies MemoRecord;
-    })
-    .filter((record): record is MemoRecord => !!record);
-
-  if (records.length === 0) return null;
-
-  const parsedActiveId = typeof parsed.activeMemoId === 'string' ? parsed.activeMemoId : records[0].id;
-  const activeMemoId = records.some((record) => record.id === parsedActiveId) ? parsedActiveId : records[0].id;
-
-  return {
-    version: 1,
-    activeMemoId,
-    records,
-  };
-}
-
-function normalizeCards(input: unknown) {
-  return Array.from({ length: 9 }, (_, index) => {
-    if (!Array.isArray(input)) return '';
-    const value = input[index];
-    return typeof value === 'string' ? value : '';
-  });
-}
-
-function extractSimpleImportPayload(input: unknown): SimpleImportPayload | null {
-  if (!input || typeof input !== 'object') return null;
-
-  const raw = input as {
-    title?: unknown;
-    cards?: unknown;
-    cells?: unknown;
-    data?: { title?: unknown; cards?: unknown; cells?: unknown };
-    memos?: Array<{ data?: { title?: unknown; cards?: unknown; cells?: unknown } }>;
-  };
-
-  if (typeof raw.title === 'string') {
-    return {
-      title: raw.title,
-      cards: normalizeCards(raw.cards ?? raw.cells),
-    };
-  }
-
-  if (raw.data && typeof raw.data === 'object' && typeof raw.data.title === 'string') {
-    return {
-      title: raw.data.title,
-      cards: normalizeCards(raw.data.cards ?? raw.data.cells),
-    };
-  }
-
-  const firstMemoData = Array.isArray(raw.memos) ? raw.memos[0]?.data : undefined;
-  if (firstMemoData && typeof firstMemoData.title === 'string') {
-    return {
-      title: firstMemoData.title,
-      cards: normalizeCards(firstMemoData.cards ?? firstMemoData.cells),
-    };
-  }
-
-  return null;
-}
-
-function buildImportTemplate(title: string, cards: string[]) {
-  const payload: SimpleImportPayload = {
-    title,
-    cards: normalizeCards(cards),
-  };
-  return JSON.stringify(payload, null, 2);
-}
-
-function loadMemoStore(): { records: MemoRecord[]; activeMemoId: string } {
-  const fallbackRecord = createMemoRecord(buildDefaultSnapshot(), 'メモ 1');
-
-  if (typeof window === 'undefined') {
-    return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
-  }
-
-  const raw = window.localStorage.getItem(MEMO_STORAGE_KEY);
-  if (!raw) {
-    return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    const normalized = normalizeMemoStore(parsed);
-    if (!normalized) {
-      return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
-    }
-    return { records: normalized.records, activeMemoId: normalized.activeMemoId };
-  } catch {
-    return { records: [fallbackRecord], activeMemoId: fallbackRecord.id };
-  }
-}
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  A4_H72,
+  A4_W72,
+  BULK_PANEL_W,
+  CONTENT_MARGIN_RATIO,
+  GROUPS,
+  MM72,
+  MM300,
+  PANEL_MAX_W,
+  PANEL_MIN_W,
+  SIDEBAR_W,
+  SIZES,
+  TITLE_POSITIONS,
+} from './constants/editor';
+import type { PaperSize, SizeGroup } from './types/editor';
+import {
+  buildDefaultSnapshot,
+  buildImportTemplate,
+  createMemoRecord,
+  createNextMemoName,
+  extractSimpleImportPayload,
+} from './utils/snapshot';
+import { useMemoStore } from './hooks/useMemoStore';
+import { useEditorState } from './hooks/useEditorState';
+import { useHistory } from './hooks/useHistory';
+import { UI_TOKENS } from './tokens/uiTokens';
+import { TopBar } from './components/layout/TopBar';
+import { LeftSidebar } from './components/layout/LeftSidebar';
+import { BulkEditorPanel } from './components/layout/BulkEditorPanel';
+import { GridEditor } from './components/editor/GridEditor';
+import { Button } from './components/atoms/Button';
+import { exportPrintPdf } from './services/exportPdf';
+import { exportWebPng } from './services/exportPng';
 
 function ptToScreenPx(pt: number) {
   return pt * (96 / 72);
 }
 
 function normalizeScale(value: number) {
-  if (Number.isNaN(value)) return 100;
-  return Math.min(Math.max(value, 50), 300);
+  if (Number.isNaN(value)) return UI_TOKENS.slider.zoom.default;
+  return Math.min(Math.max(value, UI_TOKENS.slider.zoom.min), UI_TOKENS.slider.zoom.max);
 }
 
 function App() {
-  const initialMemoStore = useMemo(() => loadMemoStore(), []);
-  const initialSnapshot = useMemo(() => {
-    const current = initialMemoStore.records.find((item) => item.id === initialMemoStore.activeMemoId);
-    return current?.snapshot ?? buildDefaultSnapshot();
-  }, [initialMemoStore]);
-
-  const [memoRecords, setMemoRecords] = useState<MemoRecord[]>(initialMemoStore.records);
-  const [activeMemoId, setActiveMemoId] = useState(initialMemoStore.activeMemoId);
-
-  const [currentSize, setCurrentSize] = useState<PaperSize>(initialSnapshot.currentSize);
-  const [currentPt, setCurrentPt] = useState(initialSnapshot.currentPt);
-  const [currentFont, setCurrentFont] = useState<FontType>(initialSnapshot.currentFont);
-  const [cards, setCards] = useState<string[]>(initialSnapshot.cards);
-  const [activeEditIndex, setActiveEditIndex] = useState<number | null>(null);
-  const [titleEditing, setTitleEditing] = useState(false);
-  const [titleText, setTitleText] = useState(initialSnapshot.titleText);
-  const [titleVisible, setTitleVisible] = useState(initialSnapshot.titleVisible);
-  const [titlePos, setTitlePos] = useState<TitlePos>(initialSnapshot.titlePos);
-  const [scalePct, setScalePct] = useState(100);
+  const { memoRecords, setMemoRecords, activeMemoId, setActiveMemoId, initialSnapshot } = useMemoStore();
+  const {
+    currentSize,
+    setCurrentSize,
+    currentPt,
+    setCurrentPt,
+    currentFont,
+    setCurrentFont,
+    cards,
+    setCards,
+    activeEditIndex,
+    setActiveEditIndex,
+    titleEditing,
+    setTitleEditing,
+    titleText,
+    setTitleText,
+    titleVisible,
+    setTitleVisible,
+    titlePos,
+    setTitlePos,
+    createSnapshot,
+    applySnapshot,
+    updateCard,
+  } = useEditorState(initialSnapshot);
+  const [scalePct, setScalePct] = useState<number>(UI_TOKENS.slider.zoom.default);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_W);
   const [bulkPanelWidth, setBulkPanelWidth] = useState(BULK_PANEL_W);
   const [activeResizer, setActiveResizer] = useState<'left' | 'right' | null>(null);
@@ -397,18 +99,14 @@ function App() {
   const [deleteError, setDeleteError] = useState('');
   const [topbarDropdownOpen, setTopbarDropdownOpen] = useState(false);
 
-  const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+  const canvasAreaRef = useRef<HTMLElement | null>(null);
   const topbarDropdownRef = useRef<HTMLDivElement | null>(null);
   const panStartRef = useRef({ x: 0, y: 0 });
   const panBaseRef = useRef({ x: 0, y: 0 });
   const pinchStartDistanceRef = useRef<number | null>(null);
-  const pinchStartScaleRef = useRef(100);
+  const pinchStartScaleRef = useRef<number>(UI_TOKENS.slider.zoom.default);
   const cardTextRefs = useRef<Array<HTMLDivElement | null>>([]);
   const titleTextRef = useRef<HTMLDivElement | null>(null);
-  const historyRef = useRef<EditorSnapshot[]>([]);
-  const historyIndexRef = useRef(-1);
-  const applyingHistoryRef = useRef(false);
-  const switchingMemoRef = useRef(false);
   const panelResizeStartRef = useRef({ x: 0, width: 0 });
 
   const innerTop = Math.round((A4_H72 - currentSize.h72) / 2);
@@ -440,114 +138,13 @@ function App() {
       }) as CSSProperties,
     [bulkPanelWidth, sidebarWidth],
   );
-
-  const createSnapshot = useCallback(
-    (): EditorSnapshot => ({
-      currentSize: { ...currentSize },
-      currentPt,
-      currentFont,
-      cards: [...cards],
-      titleText,
-      titleVisible,
-      titlePos,
-    }),
-    [cards, currentFont, currentPt, currentSize, titlePos, titleText, titleVisible],
-  );
-
-  const applySnapshot = useCallback((snapshot: EditorSnapshot) => {
-    applyingHistoryRef.current = true;
-    setCurrentSize({ ...snapshot.currentSize });
-    setCurrentPt(snapshot.currentPt);
-    setCurrentFont(snapshot.currentFont);
-    setCards([...snapshot.cards]);
-    setTitleText(snapshot.titleText);
-    setTitleVisible(snapshot.titleVisible);
-    setTitlePos(snapshot.titlePos);
-    setActiveEditIndex(null);
-    setTitleEditing(false);
-  }, []);
-
-  const loadMemoSnapshot = useCallback((snapshot: EditorSnapshot) => {
-    switchingMemoRef.current = true;
-    historyRef.current = [snapshot];
-    historyIndexRef.current = 0;
-    applyingHistoryRef.current = true;
-    setCurrentSize({ ...snapshot.currentSize });
-    setCurrentPt(snapshot.currentPt);
-    setCurrentFont(snapshot.currentFont);
-    setCards([...snapshot.cards]);
-    setTitleText(snapshot.titleText);
-    setTitleVisible(snapshot.titleVisible);
-    setTitlePos(snapshot.titlePos);
-    setActiveEditIndex(null);
-    setTitleEditing(false);
-  }, []);
-
-  const undoSnapshot = useCallback(() => {
-    if (historyIndexRef.current <= 0) return;
-    historyIndexRef.current -= 1;
-    const snapshot = historyRef.current[historyIndexRef.current];
-    if (!snapshot) return;
-    applySnapshot(snapshot);
-  }, [applySnapshot]);
-
-  const redoSnapshot = useCallback(() => {
-    if (historyIndexRef.current >= historyRef.current.length - 1) return;
-    historyIndexRef.current += 1;
-    const snapshot = historyRef.current[historyIndexRef.current];
-    if (!snapshot) return;
-    applySnapshot(snapshot);
-  }, [applySnapshot]);
-
-  useEffect(() => {
-    const snapshot = createSnapshot();
-
-    if (switchingMemoRef.current) {
-      switchingMemoRef.current = false;
-      return;
-    }
-
-    setMemoRecords((prev) =>
-      prev.map((record) => {
-        if (record.id !== activeMemoId) return record;
-        if (snapshotsEqual(record.snapshot, snapshot)) return record;
-        return { ...record, snapshot, updatedAt: Date.now() };
-      }),
-    );
-
-    if (historyIndexRef.current === -1) {
-      historyRef.current = [snapshot];
-      historyIndexRef.current = 0;
-      return;
-    }
-
-    if (applyingHistoryRef.current) {
-      applyingHistoryRef.current = false;
-      return;
-    }
-
-    const current = historyRef.current[historyIndexRef.current];
-    if (current && snapshotsEqual(current, snapshot)) return;
-
-    let nextHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
-    nextHistory.push(snapshot);
-    if (nextHistory.length > HISTORY_LIMIT) {
-      nextHistory = nextHistory.slice(nextHistory.length - HISTORY_LIMIT);
-    }
-
-    historyRef.current = nextHistory;
-    historyIndexRef.current = nextHistory.length - 1;
-  }, [activeMemoId, createSnapshot]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const payload: PersistedMemoStore = {
-      version: 1,
-      activeMemoId,
-      records: memoRecords,
-    };
-    window.localStorage.setItem(MEMO_STORAGE_KEY, JSON.stringify(payload));
-  }, [activeMemoId, memoRecords]);
+  const { loadMemoSnapshot, undoSnapshot, redoSnapshot } = useHistory({
+    activeMemoId,
+    historyLimit: UI_TOKENS.history.limit,
+    createSnapshot,
+    applySnapshot,
+    setMemoRecords,
+  });
 
   useEffect(() => {
     if (memoRecords.length === 0) return;
@@ -572,7 +169,7 @@ function App() {
 
   useEffect(() => {
     const onResize = () => {
-      if (window.innerWidth > 900) {
+      if (window.innerWidth > UI_TOKENS.panel.mobileBreakpoint) {
         setSettingsDrawerOpen(false);
         setBulkDrawerOpen(false);
       } else {
@@ -616,12 +213,12 @@ function App() {
 
   useEffect(() => {
     const autoScale = () => {
-      const isMobile = window.innerWidth <= 900;
+      const isMobile = window.innerWidth <= UI_TOKENS.panel.mobileBreakpoint;
       const sidePanels = isMobile ? 0 : sidebarWidth + bulkPanelWidth;
-      const canvasWidth = window.innerWidth - sidePanels - 56;
-      const canvasHeight = window.innerHeight - 60;
+      const canvasWidth = window.innerWidth - sidePanels - UI_TOKENS.panel.autoScalePaddingX;
+      const canvasHeight = window.innerHeight - UI_TOKENS.panel.autoScalePaddingY;
       let pct = Math.floor(Math.min(canvasWidth / A4_W72, canvasHeight / A4_H72) * 100);
-      pct = Math.min(Math.max(pct, 30), 300);
+      pct = Math.min(Math.max(pct, 30), UI_TOKENS.slider.zoom.max);
       setScalePct(pct);
     };
 
@@ -631,7 +228,7 @@ function App() {
   }, [bulkPanelWidth, sidebarWidth]);
 
   const startPanelResize = (side: 'left' | 'right', event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (window.innerWidth <= 900) return;
+    if (window.innerWidth <= UI_TOKENS.panel.mobileBreakpoint) return;
     event.preventDefault();
     panelResizeStartRef.current = {
       x: event.clientX,
@@ -800,8 +397,8 @@ function App() {
   const applyCustomPx = () => {
     const width = Number.parseInt(customW, 10);
     const height = Number.parseInt(customH, 10);
-    if (!width || !height || width < 50 || height < 50) {
-      window.alert('50px以上で入力してください。');
+    if (!width || !height || width < UI_TOKENS.sizing.customPxMin || height < UI_TOKENS.sizing.customPxMin) {
+      window.alert(`${UI_TOKENS.sizing.customPxMin}px以上で入力してください。`);
       return;
     }
     if (width >= A4_W72 && height >= A4_H72) {
@@ -823,8 +420,8 @@ function App() {
   const applyCustomMm = () => {
     const mmWidth = Number.parseFloat(customMmW);
     const mmHeight = Number.parseFloat(customMmH);
-    if (!mmWidth || !mmHeight || mmWidth < 5 || mmHeight < 5) {
-      window.alert('5mm以上で入力してください。');
+    if (!mmWidth || !mmHeight || mmWidth < UI_TOKENS.sizing.customMmMin || mmHeight < UI_TOKENS.sizing.customMmMin) {
+      window.alert(`${UI_TOKENS.sizing.customMmMin}mm以上で入力してください。`);
       return;
     }
 
@@ -861,7 +458,7 @@ function App() {
     return Math.hypot(dx, dy);
   };
 
-  const handleCanvasMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+  const handleCanvasMouseDown = (event: React.MouseEvent<HTMLElement>) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
     if (target.closest('#previewZoom')) return;
@@ -874,7 +471,7 @@ function App() {
     event.preventDefault();
   };
 
-  const handleMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
+  const handleMouseMove = (event: React.MouseEvent<HTMLElement>) => {
     if (!isPanning) return;
     const dx = event.clientX - panStartRef.current.x;
     const dy = event.clientY - panStartRef.current.y;
@@ -887,7 +484,7 @@ function App() {
     setIsPanning(false);
   };
 
-  const handleCanvasTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+  const handleCanvasTouchStart = (event: React.TouchEvent<HTMLElement>) => {
     if (event.touches.length >= 2) {
       const distance = getTouchDistance(event.touches);
       if (distance) {
@@ -913,7 +510,7 @@ function App() {
     }
   };
 
-  const handleCanvasTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+  const handleCanvasTouchMove = (event: React.TouchEvent<HTMLElement>) => {
     if (event.touches.length >= 2) {
       const startDistance = pinchStartDistanceRef.current;
       const distance = getTouchDistance(event.touches);
@@ -935,7 +532,7 @@ function App() {
     }
   };
 
-  const handleCanvasTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+  const handleCanvasTouchEnd = (event: React.TouchEvent<HTMLElement>) => {
     if (event.touches.length >= 2) {
       const distance = getTouchDistance(event.touches);
       pinchStartDistanceRef.current = distance;
@@ -952,10 +549,6 @@ function App() {
     }
 
     setIsPanning(false);
-  };
-
-  const updateCard = (index: number, value: string) => {
-    setCards((prev) => prev.map((item, idx) => (idx === index ? value : item)));
   };
 
   const toggleSettingsDrawer = () => {
@@ -1089,7 +682,7 @@ function App() {
 
   const commitMemoNameEdit = () => {
     if (!editingMemoId) return;
-    const nextName = editingMemoName.trim().slice(0, 40) || '無題メモ';
+    const nextName = editingMemoName.trim().slice(0, UI_TOKENS.typography.memoNameMaxLength) || '無題メモ';
     setMemoRecords((prev) =>
       prev.map((record) => (record.id === editingMemoId ? { ...record, name: nextName, updatedAt: Date.now() } : record)),
     );
@@ -1149,10 +742,10 @@ function App() {
     if (!normalized) return;
 
       const snapshot = buildDefaultSnapshot();
-      snapshot.titleText = normalized.title.slice(0, 80);
+      snapshot.titleText = normalized.title.slice(0, UI_TOKENS.typography.titleMaxLength);
       snapshot.cards = normalized.cards;
 
-      const nextMemoName = normalized.title.trim().slice(0, 40) || createNextMemoName(memoRecords);
+      const nextMemoName = normalized.title.trim().slice(0, UI_TOKENS.typography.memoNameMaxLength) || createNextMemoName(memoRecords);
       const record = createMemoRecord(snapshot, nextMemoName);
       setMemoRecords((prev) => [record, ...prev]);
       setActiveMemoId(record.id);
@@ -1166,14 +759,14 @@ function App() {
     const normalized = parseImportJson();
     if (!normalized) return;
 
-    const titleValue = normalized.title.slice(0, 80);
+    const titleValue = normalized.title.slice(0, UI_TOKENS.typography.titleMaxLength);
     setTitleText(titleValue);
     setCards(normalized.cards);
 
     setMemoRecords((prev) =>
       prev.map((record) => {
         if (record.id !== activeMemoId) return record;
-        const nextName = titleValue.trim().slice(0, 40) || record.name;
+        const nextName = titleValue.trim().slice(0, UI_TOKENS.typography.memoNameMaxLength) || record.name;
         return {
           ...record,
           name: nextName,
@@ -1186,110 +779,20 @@ function App() {
     setImportError('');
   };
 
-  const renderExportCanvas = (isWeb: boolean) => {
-    const dpi = isWeb ? 72 : 300;
-    const renderScale = isWeb ? 4 : 1;
-    const a4W = isWeb ? A4_W72 : A4_W300;
-    const a4H = isWeb ? A4_H72 : A4_H300;
-    const innerW = isWeb ? currentSize.w72 : currentSize.w300;
-    const innerH = isWeb ? currentSize.h72 : currentSize.h300;
-    const fontPx = currentPt * (dpi / 72);
-    const ff = currentFont === 'sans' ? 'Noto Sans JP' : 'Noto Serif JP';
-
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(a4W * renderScale);
-    canvas.height = Math.round(a4H * renderScale);
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('Canvas context が取得できませんでした');
-    }
-
-    if (renderScale !== 1) {
-      ctx.scale(renderScale, renderScale);
-    }
-
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, a4W, a4H);
-
-    const gx = Math.round((a4W - innerW) / 2);
-    const gy = Math.round((a4H - innerH) / 2);
-    const cw = innerW / 3;
-    const ch = innerH / 3;
-    const lw = isWeb ? 0.5 : 2;
-
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = lw;
-    ctx.strokeRect(gx + lw / 2, gy + lw / 2, innerW - lw, innerH - lw);
-    ctx.beginPath();
-    for (let col = 1; col < 3; col += 1) {
-      const x = gx + Math.round(cw * col);
-      ctx.moveTo(x, gy);
-      ctx.lineTo(x, gy + innerH);
-    }
-    for (let row = 1; row < 3; row += 1) {
-      const y = gy + Math.round(ch * row);
-      ctx.moveTo(gx, y);
-      ctx.lineTo(gx + innerW, y);
-    }
-    ctx.stroke();
-
-    ctx.fillStyle = '#1a1a1a';
-    ctx.font = `${fontPx}px "${ff}", sans-serif`;
-    ctx.textBaseline = 'top';
-
-    cards.forEach((text, index) => {
-      const col = index % 3;
-      const row = Math.floor(index / 3);
-      const cx = gx + col * cw;
-      const cy = gy + row * ch;
-      const lines = text.split('\n');
-      const lh = fontPx * 2.0;
-      const totalH = lines.length * lh;
-      const padX = cw * CONTENT_MARGIN_RATIO;
-      const padY = cw * CONTENT_MARGIN_RATIO;
-      const startX = cx + padX;
-      const startY = Math.max(cy + padY, cy + padY + (ch - padY * 2 - totalH) / 2);
-
-      lines.forEach((line, lineIndex) => {
-        let x = startX;
-        const y = startY + lineIndex * lh;
-        for (const char of line) {
-          ctx.fillText(char, x, y);
-          x += ctx.measureText(char).width + fontPx * 0.18;
-        }
-      });
-    });
-
-    const cleanedTitle = titleText.trim();
-    if (titleVisible && cleanedTitle) {
-      const tpx = currentPt * (dpi / 72);
-      const mgX = cw * CONTENT_MARGIN_RATIO;
-      const mgY = cw * CONTENT_MARGIN_RATIO;
-
-      ctx.font = `${tpx}px "${ff}", sans-serif`;
-      const isBottom = titlePos.startsWith('bottom');
-      const align = titlePos.includes('center') ? 'center' : titlePos.includes('right') ? 'right' : 'left';
-
-      ctx.textAlign = align;
-      ctx.textBaseline = isBottom ? 'bottom' : 'top';
-      const tx = align === 'center' ? gx + innerW / 2 : align === 'right' ? gx + innerW - mgX : gx + mgX;
-      const ty = isBottom ? gy + innerH - mgY : gy + mgY;
-      ctx.fillText(cleanedTitle, tx, ty);
-    }
-
-    return canvas;
-  };
-
-  const exportPrintPdf = async () => {
+  const handleExportPrintPdf = async () => {
     setLoadingMsg('印刷用(300dpi) PDFを生成中...');
     setLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 80));
 
     try {
-      const canvas = renderExportCanvas(false);
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 210, 297);
-      pdf.save('card-layout-print-300dpi.pdf');
+      await exportPrintPdf({
+        currentSize,
+        currentPt,
+        currentFont,
+        cards,
+        titleText,
+        titleVisible,
+        titlePos,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       window.alert(`PDF生成エラー: ${message}`);
@@ -1298,17 +801,20 @@ function App() {
     }
   };
 
-  const exportWebPng = async () => {
+  const handleExportWebPng = async () => {
     setLoadingMsg('Web用(72dpi / 4x高精細) PNGを生成中...');
     setLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 80));
 
     try {
-      const canvas = renderExportCanvas(true);
-      const link = document.createElement('a');
-      link.href = canvas.toDataURL('image/png');
-      link.download = 'card-layout-web-72dpi.png';
-      link.click();
+      await exportWebPng({
+        currentSize,
+        currentPt,
+        currentFont,
+        cards,
+        titleText,
+        titleVisible,
+        titlePos,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       window.alert(`PNG生成エラー: ${message}`);
@@ -1316,39 +822,6 @@ function App() {
       setLoading(false);
     }
   };
-
-  const bulkEditorPanel = (
-    <div className="bulk-editor-panel">
-      <div className="bulk-title">まとめて入力</div>
-      <div className="bulk-input-group">
-        <label className="bulk-input-label">ページタイトル</label>
-        <input
-          className="bulk-title-input"
-          type="text"
-          value={titleText}
-          onChange={(event) => setTitleText(event.target.value)}
-          maxLength={80}
-        />
-      </div>
-
-      <div className="bulk-input-grid">
-        {cards.map((text, index) => (
-          <div key={index} className="bulk-input-card">
-            <label className="bulk-input-label">カード {index + 1}</label>
-            <textarea
-              className="bulk-textarea"
-              value={text}
-              onChange={(event) => updateCard(index, event.target.value)}
-              onFocus={() => {
-                setActiveEditIndex(null);
-                setTitleEditing(false);
-              }}
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
 
   return (
     <>
@@ -1371,7 +844,7 @@ function App() {
           />
           {importError ? <div className="import-popup-error">{importError}</div> : null}
           <div className="import-popup-actions">
-            <button
+            <Button
               className="toggle-btn"
               type="button"
               onClick={() => {
@@ -1380,13 +853,13 @@ function App() {
               }}
             >
               キャンセル
-            </button>
-            <button className="toggle-btn" type="button" onClick={importOverwriteCurrentMemo}>
+            </Button>
+            <Button className="toggle-btn" type="button" onClick={importOverwriteCurrentMemo}>
               上書き
-            </button>
-            <button className="toggle-btn active" type="button" onClick={importAsNewMemo}>
+            </Button>
+            <Button className="toggle-btn active" type="button" onClick={importAsNewMemo}>
               新規作成
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -1404,20 +877,20 @@ function App() {
               <option value="recent">最近使った順</option>
               <option value="name">五十音順</option>
             </select>
-            <button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('new')}>
+            <Button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('new')}>
               新規作成
-            </button>
-            <button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('duplicate')}>
+            </Button>
+            <Button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('duplicate')}>
               複製
-            </button>
-            <button
+            </Button>
+            <Button
               className={`toggle-btn${isMultiSelectMode ? ' active' : ''}`}
               type="button"
               onClick={() => askDeleteConfirmation(selectedMemoIds)}
               disabled={!isMultiSelectMode}
             >
               まとめて削除
-            </button>
+            </Button>
           </div>
           <div className="delete-list">
             {sortedMemoRecords.map((record) => {
@@ -1464,7 +937,7 @@ function App() {
                     )}
                   </div>
                   <div className="memo-row-actions">
-                    <button
+                    <Button
                       className="toggle-btn memo-row-icon-btn"
                       type="button"
                       aria-label="このメモ名を編集"
@@ -1475,8 +948,8 @@ function App() {
                       }}
                     >
                       ✎
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       className="toggle-btn memo-row-icon-btn"
                       type="button"
                       aria-label="このメモを削除"
@@ -1487,7 +960,7 @@ function App() {
                       }}
                     >
                       🗑
-                    </button>
+                    </Button>
                   </div>
                 </div>
               );
@@ -1495,17 +968,17 @@ function App() {
           </div>
           {deleteError ? <div className="import-popup-error">{deleteError}</div> : null}
           <div className="import-popup-actions two-col">
-            <button className="toggle-btn" type="button" onClick={closeDeletePopups}>
+            <Button className="toggle-btn" type="button" onClick={closeDeletePopups}>
               キャンセル
-            </button>
-            <button
+            </Button>
+            <Button
               className={`toggle-btn${switchTargetMemoId ? ' active' : ''}`}
               type="button"
               onClick={switchFromSelection}
               disabled={!switchTargetMemoId}
             >
               切り替え
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -1515,12 +988,12 @@ function App() {
           <div className="import-popup-title">削除の確認</div>
           <p className="import-popup-help">選択中の {pendingDeleteIds.length} 件を削除します。よろしいですか？</p>
           <div className="import-popup-actions two-col">
-            <button className="toggle-btn" type="button" onClick={closeDeleteConfirmOnly}>
+            <Button className="toggle-btn" type="button" onClick={closeDeleteConfirmOnly}>
               キャンセル
-            </button>
-            <button className="toggle-btn active" type="button" onClick={executeDeleteMemos}>
+            </Button>
+            <Button className="toggle-btn active" type="button" onClick={executeDeleteMemos}>
               削除する
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -1532,7 +1005,7 @@ function App() {
             className="memo-create-input"
             type="text"
             value={memoCreateName}
-            maxLength={40}
+            maxLength={UI_TOKENS.typography.memoNameMaxLength}
             autoFocus
             onChange={(event) => setMemoCreateName(event.target.value)}
             onKeyDown={(event) => {
@@ -1543,22 +1016,22 @@ function App() {
             }}
           />
           <div className="import-popup-actions two-col">
-            <button className="toggle-btn" type="button" onClick={() => setMemoCreatePopupOpen(false)}>
+            <Button className="toggle-btn" type="button" onClick={() => setMemoCreatePopupOpen(false)}>
               キャンセル
-            </button>
-            <button
+            </Button>
+            <Button
               className={`toggle-btn${memoCreateName.trim() ? ' active' : ''}`}
               type="button"
               onClick={submitCreateMemo}
               disabled={!memoCreateName.trim()}
             >
               作成
-            </button>
+            </Button>
           </div>
         </div>
       </div>
 
-      <button
+      <Button
         className="drawer-toggle settings-toggle"
         type="button"
         aria-label="設定パネルを開く"
@@ -1567,8 +1040,8 @@ function App() {
         onClick={toggleSettingsDrawer}
       >
         設定
-      </button>
-      <button
+      </Button>
+      <Button
         className="drawer-toggle bulk-toggle"
         type="button"
         aria-label="一括入力パネルを開く"
@@ -1577,7 +1050,7 @@ function App() {
         onClick={toggleBulkDrawer}
       >
         入力
-      </button>
+      </Button>
       <div
         className={`drawer-backdrop${settingsDrawerOpen || bulkDrawerOpen ? ' show' : ''}`}
         aria-hidden={!settingsDrawerOpen && !bulkDrawerOpen}
@@ -1588,342 +1061,125 @@ function App() {
       />
 
       <div className="app-shell">
-        <header className="memo-topbar" aria-label="メモ管理バー">
-          <div className="memo-topbar-dropdown" ref={topbarDropdownRef}>
-            <button
-              className="memo-topbar-select"
-              type="button"
-              aria-haspopup="listbox"
-              aria-expanded={topbarDropdownOpen}
-              aria-label="メモ切り替え"
-              onClick={() => setTopbarDropdownOpen((prev) => !prev)}
-            >
-              <span className="memo-topbar-select-text">{activeMemo?.name ?? 'メモ 1'}</span>
-              <span className="memo-topbar-caret">▾</span>
-            </button>
-
-            <div className={`memo-topbar-dropdown-menu${topbarDropdownOpen ? ' show' : ''}`} role="listbox" aria-label="メモ一覧">
-              {memoRecords.map((record) => (
-                <div key={record.id} className={`memo-topbar-option${record.id === activeMemoId ? ' active' : ''}`}>
-                  <button className="memo-topbar-option-name" type="button" onClick={() => switchFromTopbarDropdown(record.id)}>
-                    {record.name}
-                  </button>
-                  <button
-                    className="memo-topbar-option-delete"
-                    type="button"
-                    aria-label="このメモを削除"
-                    title="削除"
-                    onClick={() => deleteFromTopbarDropdown(record.id)}
-                  >
-                    🗑
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-          <button className="toggle-btn memo-topbar-btn" onClick={openMemoManageDialog} type="button">
-            管理
-          </button>
-          <button className="toggle-btn memo-topbar-btn" onClick={() => openCreateMemoPopup('new')} type="button">
-            新規
-          </button>
-          <button className="toggle-btn memo-topbar-btn" onClick={() => openCreateMemoPopup('duplicate')} type="button">
-            複製
-          </button>
-          <button className="toggle-btn memo-topbar-btn" onClick={openImportDialog} type="button">
-            JSON
-          </button>
-        </header>
+        <TopBar
+          topbarDropdownRef={topbarDropdownRef}
+          topbarDropdownOpen={topbarDropdownOpen}
+          activeMemoId={activeMemoId}
+          activeMemoName={activeMemo?.name ?? 'メモ 1'}
+          memoRecords={memoRecords}
+          onToggleDropdown={() => setTopbarDropdownOpen((prev) => !prev)}
+          onSwitchMemo={switchFromTopbarDropdown}
+          onDeleteMemo={deleteFromTopbarDropdown}
+          onOpenManage={openMemoManageDialog}
+          onOpenCreateNew={() => openCreateMemoPopup('new')}
+          onOpenDuplicate={() => openCreateMemoPopup('duplicate')}
+          onOpenImport={openImportDialog}
+        />
 
         <div className={`layout${activeResizer ? ' is-resizing' : ''}`} style={layoutStyle}>
-        <aside className="sidebar" id="sidePanel">
-          <div className="sidebar-inner">
-            <div>
-              <div className="app-title">A4 カードレイアウト</div>
-              <div className="app-info">
-                メモ：<em>{activeMemo?.name ?? 'メモ 1'}</em>
-                <br />
-                外：A4　内：<em>{infoInner}</em>
-                <br />
-                書体：<em>{infoFont}</em>　<em>{currentPt}pt</em>
-              </div>
-            </div>
+        <LeftSidebar
+          activeMemoName={activeMemo?.name ?? 'メモ 1'}
+          infoInner={infoInner}
+          infoFont={infoFont}
+          currentPt={currentPt}
+          titleText={titleText}
+          titleMaxLength={UI_TOKENS.typography.titleMaxLength}
+          onTitleTextChange={setTitleText}
+          titleVisible={titleVisible}
+          onToggleTitleVisible={() => setTitleVisible((prev) => !prev)}
+          titlePos={titlePos}
+          titlePositions={TITLE_POSITIONS}
+          onSelectTitlePos={setTitlePos}
+          groups={GROUPS}
+          sizeByGroup={sizeByGroup}
+          currentSizeKey={currentSize.key}
+          onSelectSize={setCurrentSize}
+          customW={customW}
+          customH={customH}
+          customMmW={customMmW}
+          customMmH={customMmH}
+          onChangeCustomW={setCustomW}
+          onChangeCustomH={setCustomH}
+          onChangeCustomMmW={setCustomMmW}
+          onChangeCustomMmH={setCustomMmH}
+          onApplyCustomPx={applyCustomPx}
+          onApplyCustomMm={applyCustomMm}
+          currentFont={currentFont}
+          onSelectFont={setCurrentFont}
+          fontPtMin={UI_TOKENS.slider.fontPt.min}
+          fontPtMax={UI_TOKENS.slider.fontPt.max}
+          fontPtStep={UI_TOKENS.slider.fontPt.step}
+          onChangePt={setCurrentPt}
+          zoomMin={UI_TOKENS.slider.zoom.min}
+          zoomMax={UI_TOKENS.slider.zoom.max}
+          zoomStep={UI_TOKENS.slider.zoom.step}
+          scalePct={scalePct}
+          onChangeScale={(value) => setScalePct(normalizeScale(value))}
+          onExportWebPng={() => void handleExportWebPng()}
+          onExportPrintPdf={() => void handleExportPrintPdf()}
+          onPrintBrowser={() => window.print()}
+          customPxMin={UI_TOKENS.sizing.customPxMin}
+          customMmMin={UI_TOKENS.sizing.customMmMin}
+          customMmStep={UI_TOKENS.sizing.customMmStep}
+        />
 
-            <div className="section">
-              <div className="sec-label">ページタイトル</div>
-              <input
-                className="title-input"
-                type="text"
-                value={titleText}
-                onChange={(event) => setTitleText(event.target.value)}
-                maxLength={80}
-              />
-              <div className="toggle-row">
-                <button
-                  className={`toggle-btn${titleVisible ? ' active' : ''}`}
-                  onClick={() => setTitleVisible((prev) => !prev)}
-                  type="button"
-                >
-                  タイトル表示: {titleVisible ? 'ON' : 'OFF'}
-                </button>
-              </div>
-              <div className="pos-grid">
-                {TITLE_POSITIONS.map((item) => (
-                  <button
-                    key={item.value}
-                    className={`pos-btn${titlePos === item.value ? ' active' : ''}`}
-                    onClick={() => setTitlePos(item.value)}
-                    type="button"
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="section">
-              <div className="sec-label">内側の用紙サイズ</div>
-              {GROUPS.map((group) => (
-                <div className="group-block" key={group.key}>
-                  <div className="group-name">{group.label}</div>
-                  <div className="btn-row">
-                    {sizeByGroup.get(group.key)?.map((size) => (
-                      <button
-                        key={size.key}
-                        type="button"
-                        className={`s-btn${currentSize.key === size.key ? ' active' : ''}`}
-                        title={`${size.mm}mm`}
-                        onClick={() => setCurrentSize(size)}
-                      >
-                        {size.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-
-              <div className="custom-block">
-                <div className="input-line">
-                  <span>px W</span>
-                  <input className="nano" type="number" min={50} value={customW} onChange={(e) => setCustomW(e.target.value)} />
-                  <span>×</span>
-                  <input className="nano" type="number" min={50} value={customH} onChange={(e) => setCustomH(e.target.value)} />
-                  <button className="apply-btn" onClick={applyCustomPx} type="button">
-                    適用
-                  </button>
-                </div>
-                <div className="input-line">
-                  <span>mm W</span>
-                  <input className="nano" type="number" min={5} step={0.5} value={customMmW} onChange={(e) => setCustomMmW(e.target.value)} />
-                  <span>×</span>
-                  <input className="nano" type="number" min={5} step={0.5} value={customMmH} onChange={(e) => setCustomMmH(e.target.value)} />
-                  <button className="apply-btn" onClick={applyCustomMm} type="button">
-                    適用
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="section">
-              <div className="sec-label">書体</div>
-              <div className="toggle-row">
-                <button
-                  className={`toggle-btn${currentFont === 'sans' ? ' active' : ''}`}
-                  onClick={() => setCurrentFont('sans')}
-                  type="button"
-                >
-                  ゴシック
-                </button>
-                <button
-                  className={`toggle-btn${currentFont === 'serif' ? ' active' : ''}`}
-                  onClick={() => setCurrentFont('serif')}
-                  type="button"
-                >
-                  明朝
-                </button>
-              </div>
-            </div>
-
-            <div className="section">
-              <div className="sec-label">フォントサイズ</div>
-              <div className="slider-row">
-                <input
-                  className="ui-range"
-                  type="range"
-                  min={3}
-                  max={24}
-                  step={1}
-                  value={currentPt}
-                  onChange={(event) => setCurrentPt(Number.parseInt(event.target.value, 10))}
-                />
-                <span className="slider-val">{currentPt} pt</span>
-              </div>
-            </div>
-
-            <div className="section">
-              <div className="sec-label">表示倍率</div>
-              <div className="slider-row">
-                <input
-                  className="ui-range"
-                  type="range"
-                  min={50}
-                  max={300}
-                  step={5}
-                  value={scalePct}
-                  onChange={(event) => setScalePct(normalizeScale(Number.parseInt(event.target.value, 10)))}
-                />
-                <span className="slider-val">{scalePct}%</span>
-              </div>
-            </div>
-
-            <div className="section">
-              <div className="pdf-group" style={{ marginTop: 4 }}>
-                <div className="pdf-label">データ書き出し</div>
-                <button className="action-btn" onClick={() => void exportWebPng()} type="button">
-                  ⬇ Web 用 PNG（72dpi）
-                </button>
-                <button className="action-btn" onClick={() => void exportPrintPdf()} type="button">
-                  ⬇ 印刷用（300dpi）
-                </button>
-              </div>
-              <button className="action-btn dim" onClick={() => window.print()} type="button" style={{ marginTop: 4 }}>
-                🖨 ブラウザ印刷
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        <button
+        <Button
           className="panel-resizer panel-resizer-left"
           type="button"
           aria-label="左パネル幅を変更"
           onPointerDown={(event) => startPanelResize('left', event)}
         />
 
-        <main
-          ref={canvasAreaRef}
-          className={`canvas-area${spacePanReady ? ' space-pan-ready' : ''}${isPanning ? ' is-panning' : ''}`}
-          onMouseDown={handleCanvasMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onTouchStart={handleCanvasTouchStart}
-          onTouchMove={handleCanvasTouchMove}
-          onTouchEnd={handleCanvasTouchEnd}
-          onTouchCancel={handleCanvasTouchEnd}
-        >
-          <div
-            className="scale-outer"
-            style={{
-              transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
-              width: `${Math.round(A4_W72 * scale)}px`,
-              height: `${Math.round(A4_H72 * scale)}px`,
-            }}
-          >
-            <div
-              className="a4"
-              style={{
-                transform: `scale(${scale})`,
-              }}
-            >
-              <div
-                id="inner-grid"
-                style={{
-                  width: `${currentSize.w72}px`,
-                  height: `${currentSize.h72}px`,
-                  top: `${innerTop}px`,
-                  left: `${innerLeft}px`,
-                }}
-              >
-                {cards.map((text, index) => (
-                  <div key={index} className="card">
-                    <div
-                      ref={(element) => {
-                        cardTextRefs.current[index] = element;
-                      }}
-                      className="card-text"
-                      data-placeholder="テキストを入力"
-                      suppressContentEditableWarning
-                      contentEditable={activeEditIndex === index}
-                      style={{ fontFamily: FONT_FAMILY[currentFont] }}
-                      onMouseDown={() => {
-                        setTitleEditing(false);
-                        setActiveEditIndex(index);
-                      }}
-                      onTouchStart={() => {
-                        setTitleEditing(false);
-                        setActiveEditIndex(index);
-                      }}
-                      onBlur={() => setActiveEditIndex((prev) => (prev === index ? null : prev))}
-                      onInput={(event) => {
-                        const value = (event.currentTarget.textContent ?? '').replace(/\r/g, '');
-                        updateCard(index, value);
-                      }}
-                    >
-                      {text}
-                    </div>
-                  </div>
-                ))}
+        <GridEditor
+          canvasAreaRef={canvasAreaRef}
+          cardTextRefs={cardTextRefs}
+          titleTextRef={titleTextRef}
+          spacePanReady={spacePanReady}
+          isPanning={isPanning}
+          onMouseDownCanvas={handleCanvasMouseDown}
+          onMouseMoveCanvas={handleMouseMove}
+          onMouseUpCanvas={handleMouseUp}
+          onTouchStartCanvas={handleCanvasTouchStart}
+          onTouchMoveCanvas={handleCanvasTouchMove}
+          onTouchEndCanvas={handleCanvasTouchEnd}
+          panOffset={panOffset}
+          a4Width={A4_W72}
+          a4Height={A4_H72}
+          scale={scale}
+          currentSize={currentSize}
+          innerTop={innerTop}
+          innerLeft={innerLeft}
+          cards={cards}
+          activeEditIndex={activeEditIndex}
+          currentFont={currentFont}
+          onStartCardEdit={(index) => {
+            setTitleEditing(false);
+            setActiveEditIndex(index);
+          }}
+          onBlurCardEdit={(index) => setActiveEditIndex((prev) => (prev === index ? null : prev))}
+          onInputCard={updateCard}
+          titlePos={titlePos}
+          titleEditing={titleEditing}
+          titleVisible={titleVisible}
+          currentPt={currentPt}
+          cardMargin={cardMargin}
+          ptToScreenPx={ptToScreenPx}
+          onStartTitleEdit={() => {
+            setActiveEditIndex(null);
+            setTitleEditing(true);
+          }}
+          onBlurTitleEdit={() => setTitleEditing(false)}
+          onInputTitle={setTitleText}
+          titleText={titleText}
+          scalePct={scalePct}
+          zoomMin={UI_TOKENS.slider.zoom.min}
+          zoomMax={UI_TOKENS.slider.zoom.max}
+          zoomStep={UI_TOKENS.slider.zoom.step}
+          onChangeScale={(value) => setScalePct(value)}
+          normalizeScale={normalizeScale}
+        />
 
-                <div
-                  ref={titleTextRef}
-                  id="page-title"
-                  className={titlePos}
-                  suppressContentEditableWarning
-                  contentEditable={titleEditing}
-                  style={{
-                    display: titleVisible ? '' : 'none',
-                    fontFamily: FONT_FAMILY[currentFont],
-                    fontSize: `${ptToScreenPx(currentPt)}px`,
-                    padding: `0 ${cardMargin}px`,
-                    top: titlePos.startsWith('bottom') ? 'auto' : `${cardMargin}px`,
-                    bottom: titlePos.startsWith('bottom') ? `${cardMargin}px` : 'auto',
-                  }}
-                  onMouseDown={() => {
-                    setActiveEditIndex(null);
-                    setTitleEditing(true);
-                  }}
-                  onTouchStart={() => {
-                    setActiveEditIndex(null);
-                    setTitleEditing(true);
-                  }}
-                  onBlur={() => setTitleEditing(false)}
-                  onInput={(event) => {
-                    const value = (event.currentTarget.textContent ?? '').replace(/\r/g, '');
-                    setTitleText(value);
-                  }}
-                >
-                  {titleText}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="preview-zoom" id="previewZoom">
-            <input
-              className="ui-range"
-              type="range"
-              min={50}
-              max={300}
-              step={5}
-              value={scalePct}
-              onChange={(event) => setScalePct(normalizeScale(Number.parseInt(event.target.value, 10)))}
-            />
-            <div className="preview-zoom-input-wrap">
-              <input
-                type="number"
-                min={50}
-                max={300}
-                step={5}
-                value={scalePct}
-                onChange={(event) => setScalePct(normalizeScale(Number.parseInt(event.target.value, 10)))}
-              />
-              <span>%</span>
-            </div>
-          </div>
-        </main>
-
-        <button
+        <Button
           className="panel-resizer panel-resizer-right"
           type="button"
           aria-label="右パネル幅を変更"
@@ -1931,11 +1187,31 @@ function App() {
         />
 
         <aside className="bulk-sidebar" id="bulkPanel">
-          {bulkEditorPanel}
+          <BulkEditorPanel
+            titleText={titleText}
+            titleMaxLength={UI_TOKENS.typography.titleMaxLength}
+            onTitleChange={setTitleText}
+            cards={cards}
+            onCardChange={updateCard}
+            onFocusInput={() => {
+              setActiveEditIndex(null);
+              setTitleEditing(false);
+            }}
+          />
         </aside>
 
         <aside className="bulk-drawer" id="bulkDrawerPanel">
-          {bulkEditorPanel}
+          <BulkEditorPanel
+            titleText={titleText}
+            titleMaxLength={UI_TOKENS.typography.titleMaxLength}
+            onTitleChange={setTitleText}
+            cards={cards}
+            onCardChange={updateCard}
+            onFocusInput={() => {
+              setActiveEditIndex(null);
+              setTitleEditing(false);
+            }}
+          />
         </aside>
       </div>
       </div>
