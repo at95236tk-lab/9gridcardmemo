@@ -363,6 +363,7 @@ body,
   padding: 28px 24px 48px;
   position: relative;
   cursor: default;
+  touch-action: none;
 }
 
 .canvas-area.space-pan-ready,
@@ -472,7 +473,8 @@ body,
   letter-spacing: var(--letter-spacing);
   text-align: left;
   color: #1a1a1a;
-  max-width: 90%;
+  width: 100%;
+  max-width: 100%;
   word-break: break-all;
   white-space: pre-wrap;
 }
@@ -505,8 +507,14 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: text;
   z-index: 5;
+}
+
+#page-title[contenteditable='true'] {
+  outline: none;
+  background: rgba(200, 169, 126, 0.08);
 }
 
 #page-title.top-left {
@@ -601,8 +609,14 @@ body,
 }
 
 @media (max-width: 900px) {
+  .layout {
+    height: 100dvh;
+  }
+
   .drawer-toggle {
     display: block;
+    left: auto;
+    right: calc(12px + env(safe-area-inset-right));
   }
 
   body.drawer-open .drawer-toggle {
@@ -612,12 +626,19 @@ body,
   .sidebar {
     position: fixed;
     top: 0;
-    left: 0;
+    left: auto;
+    right: 0;
+    height: 100dvh;
+    background: rgba(24, 24, 24, 0.9);
     width: min(82vw, 320px);
     max-width: 320px;
-    transform: translateX(-105%);
+    transform: translateX(105%);
     transition: transform 0.2s ease;
     z-index: 130;
+  }
+
+  .sidebar-inner {
+    padding-bottom: calc(40px + env(safe-area-inset-bottom));
   }
 
   body.drawer-open .sidebar {

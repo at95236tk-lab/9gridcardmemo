@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type SizeGroup = 'A' | 'B' | 'card' | 'book';
 type TitlePos =
@@ -22,6 +22,16 @@ type PaperSize = {
   group?: SizeGroup;
 };
 
+type EditorSnapshot = {
+  currentSize: PaperSize;
+  currentPt: number;
+  currentFont: FontType;
+  cards: string[];
+  titleText: string;
+  titleVisible: boolean;
+  titlePos: TitlePos;
+};
+
 const A4_W72 = 595;
 const A4_H72 = 842;
 const A4_W300 = 2480;
@@ -29,6 +39,27 @@ const A4_H300 = 3508;
 const MM72 = 25.4 / 72;
 const MM300 = 25.4 / 300;
 const CONTENT_MARGIN_RATIO = 0.08;
+const HISTORY_LIMIT = 200;
+
+function snapshotsEqual(a: EditorSnapshot, b: EditorSnapshot) {
+  if (a.currentPt !== b.currentPt) return false;
+  if (a.currentFont !== b.currentFont) return false;
+  if (a.titleText !== b.titleText) return false;
+  if (a.titleVisible !== b.titleVisible) return false;
+  if (a.titlePos !== b.titlePos) return false;
+  if (a.currentSize.key !== b.currentSize.key) return false;
+  if (a.currentSize.label !== b.currentSize.label) return false;
+  if (a.currentSize.w72 !== b.currentSize.w72) return false;
+  if (a.currentSize.h72 !== b.currentSize.h72) return false;
+  if (a.currentSize.w300 !== b.currentSize.w300) return false;
+  if (a.currentSize.h300 !== b.currentSize.h300) return false;
+  if (a.currentSize.mm !== b.currentSize.mm) return false;
+  if (a.cards.length !== b.cards.length) return false;
+  for (let index = 0; index < a.cards.length; index += 1) {
+    if (a.cards[index] !== b.cards[index]) return false;
+  }
+  return true;
+}
 
 const SIZES: PaperSize[] = [
   { key: 'A4', label: 'A4', w72: 595, h72: 842, w300: 2480, h300: 3508, mm: '210x297', group: 'A' },
@@ -93,6 +124,7 @@ function App() {
   const [currentFont, setCurrentFont] = useState<FontType>('sans');
   const [cards, setCards] = useState<string[]>(SAMPLE_TEXTS);
   const [activeEditIndex, setActiveEditIndex] = useState<number | null>(null);
+  const [titleEditing, setTitleEditing] = useState(false);
   const [titleText, setTitleText] = useState('ページタイトル');
   const [titleVisible, setTitleVisible] = useState(true);
   const [titlePos, setTitlePos] = useState<TitlePos>('top-left');
@@ -114,6 +146,10 @@ function App() {
   const pinchStartDistanceRef = useRef<number | null>(null);
   const pinchStartScaleRef = useRef(100);
   const cardTextRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const titleTextRef = useRef<HTMLDivElement | null>(null);
+  const historyRef = useRef<EditorSnapshot[]>([]);
+  const historyIndexRef = useRef(-1);
+  const applyingHistoryRef = useRef(false);
 
   const innerTop = Math.round((A4_H72 - currentSize.h72) / 2);
   const innerLeft = Math.round((A4_W72 - currentSize.w72) / 2);
@@ -122,6 +158,75 @@ function App() {
 
   const infoInner = currentSize.key === 'custom' ? `カスタム ${currentSize.mm}mm` : `${currentSize.label}(${currentSize.mm}mm)`;
   const infoFont = currentFont === 'sans' ? 'ゴシック' : '明朝';
+
+  const createSnapshot = useCallback(
+    (): EditorSnapshot => ({
+      currentSize: { ...currentSize },
+      currentPt,
+      currentFont,
+      cards: [...cards],
+      titleText,
+      titleVisible,
+      titlePos,
+    }),
+    [cards, currentFont, currentPt, currentSize, titlePos, titleText, titleVisible],
+  );
+
+  const applySnapshot = useCallback((snapshot: EditorSnapshot) => {
+    applyingHistoryRef.current = true;
+    setCurrentSize({ ...snapshot.currentSize });
+    setCurrentPt(snapshot.currentPt);
+    setCurrentFont(snapshot.currentFont);
+    setCards([...snapshot.cards]);
+    setTitleText(snapshot.titleText);
+    setTitleVisible(snapshot.titleVisible);
+    setTitlePos(snapshot.titlePos);
+    setActiveEditIndex(null);
+    setTitleEditing(false);
+  }, []);
+
+  const undoSnapshot = useCallback(() => {
+    if (historyIndexRef.current <= 0) return;
+    historyIndexRef.current -= 1;
+    const snapshot = historyRef.current[historyIndexRef.current];
+    if (!snapshot) return;
+    applySnapshot(snapshot);
+  }, [applySnapshot]);
+
+  const redoSnapshot = useCallback(() => {
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    historyIndexRef.current += 1;
+    const snapshot = historyRef.current[historyIndexRef.current];
+    if (!snapshot) return;
+    applySnapshot(snapshot);
+  }, [applySnapshot]);
+
+  useEffect(() => {
+    const snapshot = createSnapshot();
+
+    if (historyIndexRef.current === -1) {
+      historyRef.current = [snapshot];
+      historyIndexRef.current = 0;
+      return;
+    }
+
+    if (applyingHistoryRef.current) {
+      applyingHistoryRef.current = false;
+      return;
+    }
+
+    const current = historyRef.current[historyIndexRef.current];
+    if (current && snapshotsEqual(current, snapshot)) return;
+
+    let nextHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
+    nextHistory.push(snapshot);
+    if (nextHistory.length > HISTORY_LIMIT) {
+      nextHistory = nextHistory.slice(nextHistory.length - HISTORY_LIMIT);
+    }
+
+    historyRef.current = nextHistory;
+    historyIndexRef.current = nextHistory.length - 1;
+  }, [createSnapshot]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--card-font-size', `${ptToScreenPx(currentPt)}px`);
@@ -162,6 +267,21 @@ function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const isEditableTarget = !!target?.closest('input, textarea, select, button') || !!target?.closest('[contenteditable="true"]');
+
+      if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+        const lowerKey = event.key.toLowerCase();
+        const isUndo = lowerKey === 'z' && !event.shiftKey;
+        const isRedo = (lowerKey === 'z' && event.shiftKey) || lowerKey === 'y';
+        if (isUndo || isRedo) {
+          event.preventDefault();
+          if (isUndo) {
+            undoSnapshot();
+          } else {
+            redoSnapshot();
+          }
+          return;
+        }
+      }
 
       if (event.key === 'Escape') {
         setDrawerOpen(false);
@@ -204,7 +324,7 @@ function App() {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, []);
+  }, [redoSnapshot, undoSnapshot]);
 
   useEffect(() => {
     const handleBeforePrint = () => {
@@ -239,10 +359,27 @@ function App() {
   }, [activeEditIndex]);
 
   useEffect(() => {
+    if (!titleEditing) return;
+    const target = titleTextRef.current;
+    if (!target) return;
+    requestAnimationFrame(() => {
+      target.focus();
+      const selection = window.getSelection();
+      if (!selection) return;
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+  }, [titleEditing]);
+
+  useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest('.card-text')) return;
+      if (target?.closest('.card-text, #page-title')) return;
       setActiveEditIndex(null);
+      setTitleEditing(false);
     };
 
     document.addEventListener('pointerdown', handlePointerDown, true);
@@ -330,6 +467,7 @@ function App() {
     const target = event.target as HTMLElement;
     if (target.closest('#previewZoom')) return;
     if (target.closest('input, textarea, select, button')) return;
+    if (target.closest('#page-title')) return;
     if (target.closest('.card-text')) return;
     if (target.closest('[contenteditable="true"]')) return;
 
@@ -354,6 +492,7 @@ function App() {
     const target = event.target as HTMLElement;
     if (target.closest('#previewZoom')) return;
     if (target.closest('input, textarea, select, button')) return;
+    if (target.closest('#page-title')) return;
     if (target.closest('.card-text')) return;
     if (target.closest('[contenteditable="true"]')) return;
 
@@ -364,14 +503,12 @@ function App() {
         pinchStartScaleRef.current = scalePct;
       }
       setIsPanning(false);
-      event.preventDefault();
       return;
     }
 
     if (event.touches.length === 1) {
       const touch = event.touches[0];
       startPan(touch.clientX, touch.clientY);
-      event.preventDefault();
     }
   };
 
@@ -384,7 +521,6 @@ function App() {
       const ratio = distance / startDistance;
       const nextScale = normalizeScale(Math.round(pinchStartScaleRef.current * ratio));
       setScalePct(nextScale);
-      event.preventDefault();
       return;
     }
 
@@ -393,7 +529,6 @@ function App() {
       const dx = touch.clientX - panStartRef.current.x;
       const dy = touch.clientY - panStartRef.current.y;
       setPanOffset({ x: panBaseRef.current.x + dx, y: panBaseRef.current.y + dy });
-      event.preventDefault();
     }
   };
 
@@ -410,7 +545,6 @@ function App() {
     if (event.touches.length === 1) {
       const touch = event.touches[0];
       startPan(touch.clientX, touch.clientY);
-      event.preventDefault();
       return;
     }
 
@@ -683,7 +817,7 @@ function App() {
               <div className="slider-row">
                 <input
                   type="range"
-                  min={4}
+                  min={3}
                   max={24}
                   step={1}
                   value={currentPt}
@@ -771,8 +905,14 @@ function App() {
                       suppressContentEditableWarning
                       contentEditable={activeEditIndex === index}
                       style={{ fontFamily: FONT_FAMILY[currentFont] }}
-                      onMouseDown={() => setActiveEditIndex(index)}
-                      onTouchStart={() => setActiveEditIndex(index)}
+                      onMouseDown={() => {
+                        setTitleEditing(false);
+                        setActiveEditIndex(index);
+                      }}
+                      onTouchStart={() => {
+                        setTitleEditing(false);
+                        setActiveEditIndex(index);
+                      }}
                       onBlur={() => setActiveEditIndex((prev) => (prev === index ? null : prev))}
                       onInput={(event) => {
                         const value = (event.currentTarget.textContent ?? '').replace(/\r/g, '');
@@ -785,8 +925,11 @@ function App() {
                 ))}
 
                 <div
+                  ref={titleTextRef}
                   id="page-title"
                   className={titlePos}
+                  suppressContentEditableWarning
+                  contentEditable={titleEditing}
                   style={{
                     display: titleVisible ? '' : 'none',
                     fontFamily: FONT_FAMILY[currentFont],
@@ -794,6 +937,19 @@ function App() {
                     padding: `0 ${cardMargin}px`,
                     top: titlePos.startsWith('bottom') ? 'auto' : `${cardMargin}px`,
                     bottom: titlePos.startsWith('bottom') ? `${cardMargin}px` : 'auto',
+                  }}
+                  onMouseDown={() => {
+                    setActiveEditIndex(null);
+                    setTitleEditing(true);
+                  }}
+                  onTouchStart={() => {
+                    setActiveEditIndex(null);
+                    setTitleEditing(true);
+                  }}
+                  onBlur={() => setTitleEditing(false)}
+                  onInput={(event) => {
+                    const value = (event.currentTarget.textContent ?? '').replace(/\r/g, '');
+                    setTitleText(value);
                   }}
                 >
                   {titleText}
