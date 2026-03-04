@@ -16,7 +16,7 @@ export const UI_TOKENS = {
   },
   slider: {
     zoom: { min: BASE_MIN_PX, max: 300, step: 5, default: 100 },
-    fontPt: { min: 3, max: 24, step: 1 },
+    fontPt: { min: 3, max: 24, step: 0.5 },
   },
   panel: {
     mobileBreakpoint: 900,

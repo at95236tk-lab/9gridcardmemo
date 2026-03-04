@@ -25,6 +25,35 @@ npm install
 npm run dev
 ```
 
+### Supabase 連携（任意）
+
+Supabase を設定すると、メモがクラウド保存され、作成・切り替え・削除が端末をまたいで同期されます。
+
+1. `.env.example` を `.env` にコピーして値を設定
+
+```env
+VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+```
+
+2. Supabase SQL Editor でテーブルを作成
+
+```sql
+create table if not exists public.memos (
+  id text primary key,
+  owner_key text not null,
+  name text not null,
+  snapshot jsonb not null,
+  created_at bigint not null,
+  updated_at bigint not null
+);
+
+create index if not exists memos_owner_key_updated_at_idx
+  on public.memos (owner_key, updated_at desc);
+```
+
+`.env` 未設定時は従来どおり `localStorage` のみで動作します。
+
 ## 使い方（基本）
 
 1. 左側パネルで「内側の用紙サイズ」を選ぶ（A/B 系、はがき、手帳、またはカスタム）
@@ -77,12 +106,13 @@ npm run dev
 - `Ctrl+Z` / `Cmd+Z` で Undo
 - `Ctrl+Y` または `Ctrl+Shift+Z`（Mac は `Cmd+Shift+Z`）で Redo
 
-### ブラウザ保存（localStorage）
+### メモ保存（Supabase + localStorage）
 
-- ログイン不要でブラウザ内にデータ保存
 - 9マスメモを複数作成し、一覧から切り替え可能
-- 対応操作: 新規作成 / 複製 / JSON インポート / 削除 / 切り替え
+- 対応操作: 新規作成 / 複製 / JSON インポート / 削除 / 切り替え / 名前変更
 - 編集内容はアクティブなメモに自動保存
+- Supabase 設定済みなら、メモ単位で作成・更新・削除を同期
+- 未設定時は `localStorage` のみで保存（従来動作）
 - 管理ポップアップでメモ一覧を行単位で表示
 - 各行でメモ名を直接編集、切り替え、削除が可能
 - 2件以上選択で複数選択モードになり、まとめて削除が有効化

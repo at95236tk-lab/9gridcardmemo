@@ -64,7 +64,12 @@ export function useHistory({ activeMemoId, historyLimit, createSnapshot, applySn
       prev.map((record) => {
         if (record.id !== activeMemoId) return record;
         if (snapshotsEqual(record.snapshot, snapshot)) return record;
-        return { ...record, snapshot, updatedAt: Date.now() };
+        return {
+          ...record,
+          name: snapshot.titleText.trim() || '無題メモ',
+          snapshot,
+          updatedAt: Date.now(),
+        };
       }),
     );
 

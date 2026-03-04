@@ -1,4 +1,4 @@
-import type { TouchEvent as ReactTouchEvent, MouseEvent as ReactMouseEvent, MutableRefObject, RefObject } from 'react';
+import type { TouchEvent as ReactTouchEvent, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent, MutableRefObject, RefObject } from 'react';
 import { FONT_FAMILY } from '../../constants/editor';
 
 type GridEditorProps = {
@@ -10,6 +10,7 @@ type GridEditorProps = {
   onMouseDownCanvas: (event: ReactMouseEvent<HTMLElement>) => void;
   onMouseMoveCanvas: (event: ReactMouseEvent<HTMLElement>) => void;
   onMouseUpCanvas: () => void;
+  onWheelCanvas: (event: ReactWheelEvent<HTMLElement>) => void;
   onTouchStartCanvas: (event: ReactTouchEvent<HTMLElement>) => void;
   onTouchMoveCanvas: (event: ReactTouchEvent<HTMLElement>) => void;
   onTouchEndCanvas: (event: ReactTouchEvent<HTMLElement>) => void;
@@ -29,9 +30,7 @@ type GridEditorProps = {
   titlePos: string;
   titleEditing: boolean;
   titleVisible: boolean;
-  currentPt: number;
   cardMargin: number;
-  ptToScreenPx: (pt: number) => number;
   onStartTitleEdit: () => void;
   onBlurTitleEdit: () => void;
   onInputTitle: (value: string) => void;
@@ -53,6 +52,7 @@ export function GridEditor({
   onMouseDownCanvas,
   onMouseMoveCanvas,
   onMouseUpCanvas,
+  onWheelCanvas,
   onTouchStartCanvas,
   onTouchMoveCanvas,
   onTouchEndCanvas,
@@ -72,9 +72,7 @@ export function GridEditor({
   titlePos,
   titleEditing,
   titleVisible,
-  currentPt,
   cardMargin,
-  ptToScreenPx,
   onStartTitleEdit,
   onBlurTitleEdit,
   onInputTitle,
@@ -94,6 +92,7 @@ export function GridEditor({
       onMouseMove={onMouseMoveCanvas}
       onMouseUp={onMouseUpCanvas}
       onMouseLeave={onMouseUpCanvas}
+      onWheel={onWheelCanvas}
       onTouchStart={onTouchStartCanvas}
       onTouchMove={onTouchMoveCanvas}
       onTouchEnd={onTouchEndCanvas}
@@ -150,7 +149,6 @@ export function GridEditor({
               style={{
                 display: titleVisible ? '' : 'none',
                 fontFamily: FONT_FAMILY[currentFont],
-                fontSize: `${ptToScreenPx(currentPt)}px`,
                 padding: `0 ${cardMargin}px`,
                 top: titlePos.startsWith('bottom') ? 'auto' : `${cardMargin}px`,
                 bottom: titlePos.startsWith('bottom') ? `${cardMargin}px` : 'auto',

@@ -86,7 +86,7 @@
   --token-color-accent-soft: #d4c4ae;
   --token-color-danger-soft: #ff9d9d;
   --token-color-accent-wash: rgba(200, 169, 126, 0.12);
-  --token-color-surface-frost: rgba(24, 24, 24, 0.92);
+  --token-color-surface-frost: var(--token-color-panel);
   --token-color-shadow-soft: rgba(0, 0, 0, 0.18);
   --token-color-overlay: rgba(0, 0, 0, 0.42);
   --token-color-overlay-strong: rgba(0, 0, 0, 0.45);
@@ -145,7 +145,6 @@
   --token-max-w-dropdown: 300px;
   --token-min-w-zoom-input: 36px;
 
-  --token-breakpoint-mobile: 900px;
   --token-viewport-h: 100vh;
   --token-viewport-dh: 100dvh;
   --token-viewport-w: 100vw;

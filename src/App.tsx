@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import {
   A4_H72,
   A4_W72,
@@ -91,15 +91,17 @@ function App() {
   const [memoCreateMode, setMemoCreateMode] = useState<'new' | 'duplicate'>('new');
   const [memoCreateName, setMemoCreateName] = useState('');
   const [selectedMemoIds, setSelectedMemoIds] = useState<string[]>([]);
+  const [memoSelectionAnchorId, setMemoSelectionAnchorId] = useState<string | null>(null);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [switchTargetMemoId, setSwitchTargetMemoId] = useState<string | null>(null);
+  const [renameTargetMemoId, setRenameTargetMemoId] = useState<string | null>(null);
+  const [renameMemoName, setRenameMemoName] = useState('');
   const [memoSortMode, setMemoSortMode] = useState<'recent' | 'name'>('recent');
-  const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
-  const [editingMemoName, setEditingMemoName] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [topbarDropdownOpen, setTopbarDropdownOpen] = useState(false);
 
   const canvasAreaRef = useRef<HTMLElement | null>(null);
+  const topbarAreaRef = useRef<HTMLDivElement | null>(null);
   const topbarDropdownRef = useRef<HTMLDivElement | null>(null);
   const panStartRef = useRef({ x: 0, y: 0 });
   const panBaseRef = useRef({ x: 0, y: 0 });
@@ -117,15 +119,17 @@ function App() {
   const infoInner = currentSize.key === 'custom' ? `カスタム ${currentSize.mm}mm` : `${currentSize.label}(${currentSize.mm}mm)`;
   const infoFont = currentFont === 'sans' ? 'ゴシック' : '明朝';
   const activeMemo = useMemo(() => memoRecords.find((item) => item.id === activeMemoId) ?? null, [memoRecords, activeMemoId]);
+  const getMemoTitle = (record: { name: string; snapshot: { titleText: string } }) => record.snapshot.titleText.trim() || record.name || '無題メモ';
+  const activeMemoTitle = activeMemo ? getMemoTitle(activeMemo) : '無題メモ';
   const sortedMemoRecords = useMemo(() => {
     const copied = [...memoRecords];
     if (memoSortMode === 'name') {
-      copied.sort((left, right) => left.name.localeCompare(right.name, 'ja'));
+      copied.sort((left, right) => getMemoTitle(left).localeCompare(getMemoTitle(right), 'ja'));
       return copied;
     }
     copied.sort((left, right) => {
       if (right.updatedAt !== left.updatedAt) return right.updatedAt - left.updatedAt;
-      return left.name.localeCompare(right.name, 'ja');
+      return getMemoTitle(left).localeCompare(getMemoTitle(right), 'ja');
     });
     return copied;
   }, [memoRecords, memoSortMode]);
@@ -307,20 +311,28 @@ function App() {
   }, [redoSnapshot, undoSnapshot]);
 
   useEffect(() => {
-    if (!topbarDropdownOpen) return;
+    if (!topbarDropdownOpen && !importPopupOpen && !memoManagePopupOpen && !deleteConfirmPopupOpen && !memoCreatePopupOpen) {
+      return;
+    }
 
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
-      if (topbarDropdownRef.current?.contains(target)) return;
+      if (topbarAreaRef.current?.contains(target)) return;
       setTopbarDropdownOpen(false);
+      setImportPopupOpen(false);
+      setMemoManagePopupOpen(false);
+      setDeleteConfirmPopupOpen(false);
+      setMemoCreatePopupOpen(false);
+      setDeleteError('');
+      setPendingDeleteIds([]);
     };
 
     document.addEventListener('pointerdown', onPointerDown, true);
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [topbarDropdownOpen]);
+  }, [deleteConfirmPopupOpen, importPopupOpen, memoCreatePopupOpen, memoManagePopupOpen, topbarDropdownOpen]);
 
   useEffect(() => {
     const handleBeforePrint = () => {
@@ -484,6 +496,19 @@ function App() {
     setIsPanning(false);
   };
 
+  const handleCanvasWheel = (event: ReactWheelEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('#previewZoom')) return;
+    if (target.closest('input, textarea, select, button')) return;
+    if (target.closest('#page-title')) return;
+    if (target.closest('.card-text')) return;
+    if (target.closest('[contenteditable="true"]')) return;
+
+    const delta = event.deltaY < 0 ? UI_TOKENS.slider.zoom.step : -UI_TOKENS.slider.zoom.step;
+    setScalePct((prev) => normalizeScale(prev + delta));
+    event.preventDefault();
+  };
+
   const handleCanvasTouchStart = (event: React.TouchEvent<HTMLElement>) => {
     if (event.touches.length >= 2) {
       const distance = getTouchDistance(event.touches);
@@ -492,7 +517,6 @@ function App() {
         pinchStartScaleRef.current = scalePct;
       }
       setIsPanning(false);
-      event.preventDefault();
       return;
     }
 
@@ -506,7 +530,6 @@ function App() {
     if (event.touches.length === 1) {
       const touch = event.touches[0];
       startPan(touch.clientX, touch.clientY);
-      event.preventDefault();
     }
   };
 
@@ -519,7 +542,6 @@ function App() {
       const ratio = distance / startDistance;
       const nextScale = normalizeScale(Math.round(pinchStartScaleRef.current * ratio));
       setScalePct(nextScale);
-      event.preventDefault();
       return;
     }
 
@@ -528,7 +550,6 @@ function App() {
       const dx = touch.clientX - panStartRef.current.x;
       const dy = touch.clientY - panStartRef.current.y;
       setPanOffset({ x: panBaseRef.current.x + dx, y: panBaseRef.current.y + dy });
-      event.preventDefault();
     }
   };
 
@@ -578,25 +599,31 @@ function App() {
   const createNewMemo = (name?: string) => {
     const snapshot = buildDefaultSnapshot();
     const nextName = name?.trim() ? name.trim() : createNextMemoName(memoRecords);
+    snapshot.titleText = nextName;
     const record = createMemoRecord(snapshot, nextName);
     setMemoRecords((prev) => [record, ...prev]);
     setActiveMemoId(record.id);
-    loadMemoSnapshot(snapshot);
+    loadMemoSnapshot(record.snapshot);
   };
 
   const duplicateMemo = (name?: string) => {
-    const baseName = activeMemo?.name ?? 'メモ';
+    const baseName = activeMemo ? getMemoTitle(activeMemo) : 'メモ';
     const snapshot = createSnapshot();
     const nextName = name?.trim() ? name.trim() : `${baseName} コピー`;
+    snapshot.titleText = nextName;
     const record = createMemoRecord(snapshot, nextName);
     setMemoRecords((prev) => [record, ...prev]);
     setActiveMemoId(record.id);
-    loadMemoSnapshot(snapshot);
+    loadMemoSnapshot(record.snapshot);
   };
 
   const openCreateMemoPopup = (mode: 'new' | 'duplicate') => {
+    setTopbarDropdownOpen(false);
+    setImportPopupOpen(false);
+    setMemoManagePopupOpen(false);
+    setDeleteConfirmPopupOpen(false);
     setMemoCreateMode(mode);
-    const defaultName = mode === 'new' ? createNextMemoName(memoRecords) : `${activeMemo?.name ?? 'メモ'} コピー`;
+    const defaultName = mode === 'new' ? createNextMemoName(memoRecords) : `${activeMemoTitle} コピー`;
     setMemoCreateName(defaultName);
     setMemoCreatePopupOpen(true);
   };
@@ -615,23 +642,109 @@ function App() {
   };
 
   const openImportDialog = () => {
+    setTopbarDropdownOpen(false);
+    setMemoManagePopupOpen(false);
+    setDeleteConfirmPopupOpen(false);
+    setMemoCreatePopupOpen(false);
     setImportJsonText(buildImportTemplate(titleText, cards));
     setImportError('');
     setImportPopupOpen(true);
   };
 
   const openMemoManageDialog = () => {
+    setTopbarDropdownOpen(false);
+    setImportPopupOpen(false);
+    setMemoCreatePopupOpen(false);
     setSelectedMemoIds([]);
+    setMemoSelectionAnchorId(activeMemoId);
     setSwitchTargetMemoId(activeMemoId);
     setDeleteError('');
-    setEditingMemoId(null);
-    setEditingMemoName('');
+    setRenameTargetMemoId(null);
+    setRenameMemoName('');
     setDeleteConfirmPopupOpen(false);
     setMemoManagePopupOpen(true);
   };
 
-  const toggleMemoSelection = (memoId: string) => {
-    setSelectedMemoIds((prev) => (prev.includes(memoId) ? prev.filter((id) => id !== memoId) : [...prev, memoId]));
+  const startRenameMemo = (memoId: string) => {
+    const target = memoRecords.find((record) => record.id === memoId);
+    if (!target) return;
+    setRenameTargetMemoId(memoId);
+    setRenameMemoName(getMemoTitle(target));
+  };
+
+  const cancelRenameMemo = () => {
+    setRenameTargetMemoId(null);
+    setRenameMemoName('');
+  };
+
+  const submitRenameMemo = () => {
+    if (!renameTargetMemoId) return;
+    const trimmed = renameMemoName.trim();
+    if (!trimmed) return;
+
+    const now = Date.now();
+    setMemoRecords((prev) =>
+      prev.map((record) => {
+        if (record.id !== renameTargetMemoId) return record;
+        return {
+          ...record,
+          name: trimmed,
+          snapshot: {
+            ...record.snapshot,
+            titleText: trimmed,
+          },
+          updatedAt: now,
+        };
+      }),
+    );
+
+    if (renameTargetMemoId === activeMemoId) {
+      setTitleText(trimmed);
+    }
+
+    cancelRenameMemo();
+  };
+
+  const handleMemoManageRowSelection = (
+    memoId: string,
+    options?: {
+      shiftKey?: boolean;
+      ctrlKey?: boolean;
+      metaKey?: boolean;
+    },
+  ) => {
+    const shiftKey = options?.shiftKey ?? false;
+    const ctrlOrMetaKey = !!(options?.ctrlKey || options?.metaKey);
+    const clickedIndex = sortedMemoRecords.findIndex((record) => record.id === memoId);
+
+    if (clickedIndex < 0) return;
+
+    setSwitchTargetMemoId(memoId);
+
+    setSelectedMemoIds((prev) => {
+      if (shiftKey) {
+        const anchorId = memoSelectionAnchorId ?? memoId;
+        const anchorIndex = sortedMemoRecords.findIndex((record) => record.id === anchorId);
+        const safeAnchorIndex = anchorIndex >= 0 ? anchorIndex : clickedIndex;
+        const rangeStart = Math.min(safeAnchorIndex, clickedIndex);
+        const rangeEnd = Math.max(safeAnchorIndex, clickedIndex);
+        const rangeIds = sortedMemoRecords.slice(rangeStart, rangeEnd + 1).map((record) => record.id);
+        if (ctrlOrMetaKey) {
+          return Array.from(new Set([...prev, ...rangeIds]));
+        }
+        return rangeIds;
+      }
+
+      if (ctrlOrMetaKey) {
+        return prev.includes(memoId) ? prev.filter((id) => id !== memoId) : [...prev, memoId];
+      }
+
+      return [memoId];
+    });
+
+    if (!shiftKey || !memoSelectionAnchorId) {
+      setMemoSelectionAnchorId(memoId);
+    }
     if (deleteError) setDeleteError('');
   };
 
@@ -641,6 +754,7 @@ function App() {
       return;
     }
     setPendingDeleteIds(targetIds);
+    setMemoManagePopupOpen(false);
     setDeleteConfirmPopupOpen(true);
   };
 
@@ -648,6 +762,8 @@ function App() {
     setMemoManagePopupOpen(false);
     setDeleteConfirmPopupOpen(false);
     setDeleteError('');
+    setRenameTargetMemoId(null);
+    setRenameMemoName('');
     setPendingDeleteIds([]);
     setSwitchTargetMemoId(null);
   };
@@ -670,29 +786,22 @@ function App() {
     switchMemo(memoId);
   };
 
+  const toggleTopbarMemoDropdown = () => {
+    if (topbarDropdownOpen) {
+      setTopbarDropdownOpen(false);
+      return;
+    }
+
+    setImportPopupOpen(false);
+    setMemoManagePopupOpen(false);
+    setDeleteConfirmPopupOpen(false);
+    setMemoCreatePopupOpen(false);
+    setTopbarDropdownOpen(true);
+  };
+
   const deleteFromTopbarDropdown = (memoId: string) => {
     setTopbarDropdownOpen(false);
     askDeleteConfirmation([memoId]);
-  };
-
-  const startMemoNameEdit = (memoId: string, name: string) => {
-    setEditingMemoId(memoId);
-    setEditingMemoName(name);
-  };
-
-  const commitMemoNameEdit = () => {
-    if (!editingMemoId) return;
-    const nextName = editingMemoName.trim().slice(0, UI_TOKENS.typography.memoNameMaxLength) || '無題メモ';
-    setMemoRecords((prev) =>
-      prev.map((record) => (record.id === editingMemoId ? { ...record, name: nextName, updatedAt: Date.now() } : record)),
-    );
-    setEditingMemoId(null);
-    setEditingMemoName('');
-  };
-
-  const cancelMemoNameEdit = () => {
-    setEditingMemoId(null);
-    setEditingMemoName('');
   };
 
   const executeDeleteMemos = () => {
@@ -823,212 +932,60 @@ function App() {
     }
   };
 
+  const buildPlainTextExport = () => {
+    const normalizedTitle = titleText.trim() || '無題';
+    const lines = [`タイトル: ${normalizedTitle}`, ''];
+    cards.forEach((text, index) => {
+      lines.push(`[${index + 1}]`);
+      lines.push(text.trim() || '');
+      lines.push('');
+    });
+    return lines.join('\n').trimEnd();
+  };
+
+  const copyTextToClipboard = async (text: string) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  };
+
+  const handleCopyPlainText = async () => {
+    try {
+      await copyTextToClipboard(buildPlainTextExport());
+      window.alert('プレーンテキストをコピーしました。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`プレーンテキストコピーに失敗しました: ${message}`);
+    }
+  };
+
+  const handleCopyJson = async () => {
+    try {
+      await copyTextToClipboard(buildImportTemplate(titleText, cards));
+      window.alert('JSONをコピーしました。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`JSONコピーに失敗しました: ${message}`);
+    }
+  };
+
   return (
     <>
       <div className={`loading-overlay${loading ? ' show' : ''}`}>
         <div className="spinner" />
         <div>{loadingMsg}</div>
-      </div>
-
-      <div className={`import-popup-overlay${importPopupOpen ? ' show' : ''}`}>
-        <div className="import-popup" role="dialog" aria-modal="true" aria-label="JSONインポート">
-          <div className="import-popup-title">JSONインポート（タイトル + 9マス）</div>
-          <p className="import-popup-help">`title` と `cards` のみ反映します。新規作成か上書きを選択してください。</p>
-          <textarea
-            className="import-json-input"
-            value={importJsonText}
-            onChange={(event) => {
-              setImportJsonText(event.target.value);
-              if (importError) setImportError('');
-            }}
-          />
-          {importError ? <div className="import-popup-error">{importError}</div> : null}
-          <div className="import-popup-actions">
-            <Button
-              className="toggle-btn"
-              type="button"
-              onClick={() => {
-                setImportPopupOpen(false);
-                setImportError('');
-              }}
-            >
-              キャンセル
-            </Button>
-            <Button className="toggle-btn" type="button" onClick={importOverwriteCurrentMemo}>
-              上書き
-            </Button>
-            <Button className="toggle-btn active" type="button" onClick={importAsNewMemo}>
-              新規作成
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      <div className={`import-popup-overlay${memoManagePopupOpen ? ' show' : ''}`}>
-        <div className="import-popup delete-popup" role="dialog" aria-modal="true" aria-label="メモ管理">
-          <div className="import-popup-title">メモ切り替え・管理</div>
-          <div className="memo-manage-toolbar">
-            <select
-              id="memoSortMode"
-              className="memo-sort-select"
-              value={memoSortMode}
-              onChange={(event) => setMemoSortMode(event.target.value === 'name' ? 'name' : 'recent')}
-            >
-              <option value="recent">最近使った順</option>
-              <option value="name">五十音順</option>
-            </select>
-            <Button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('new')}>
-              新規作成
-            </Button>
-            <Button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('duplicate')}>
-              複製
-            </Button>
-            <Button
-              className={`toggle-btn${isMultiSelectMode ? ' active' : ''}`}
-              type="button"
-              onClick={() => askDeleteConfirmation(selectedMemoIds)}
-              disabled={!isMultiSelectMode}
-            >
-              まとめて削除
-            </Button>
-          </div>
-          <div className="delete-list">
-            {sortedMemoRecords.map((record) => {
-              const selected = selectedMemoIds.includes(record.id);
-              const editing = editingMemoId === record.id;
-              return (
-                <div
-                  key={record.id}
-                  className={`memo-manage-row${selected ? ' selected' : ''}${switchTargetMemoId === record.id ? ' switch-target' : ''}`}
-                  onClick={() => setSwitchTargetMemoId(record.id)}
-                >
-                  <label
-                    className="memo-select-check"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                    }}
-                  >
-                    <input type="checkbox" checked={selected} onChange={() => toggleMemoSelection(record.id)} />
-                  </label>
-                  <div className="memo-manage-left">
-                    {editing ? (
-                      <input
-                        className="memo-name-inline"
-                        type="text"
-                        value={editingMemoName}
-                        maxLength={40}
-                        autoFocus
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => setEditingMemoName(event.target.value)}
-                        onBlur={commitMemoNameEdit}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            commitMemoNameEdit();
-                          }
-                          if (event.key === 'Escape') {
-                            event.preventDefault();
-                            cancelMemoNameEdit();
-                          }
-                        }}
-                      />
-                    ) : (
-                      <span className="memo-name-text">{record.name}</span>
-                    )}
-                  </div>
-                  <div className="memo-row-actions">
-                    <Button
-                      className="toggle-btn memo-row-icon-btn"
-                      type="button"
-                      aria-label="このメモ名を編集"
-                      title="名前を編集"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        startMemoNameEdit(record.id, record.name);
-                      }}
-                    >
-                      ✎
-                    </Button>
-                    <Button
-                      className="toggle-btn memo-row-icon-btn"
-                      type="button"
-                      aria-label="このメモを削除"
-                      title="削除"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        askDeleteConfirmation([record.id]);
-                      }}
-                    >
-                      🗑
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {deleteError ? <div className="import-popup-error">{deleteError}</div> : null}
-          <div className="import-popup-actions two-col">
-            <Button className="toggle-btn" type="button" onClick={closeDeletePopups}>
-              キャンセル
-            </Button>
-            <Button
-              className={`toggle-btn${switchTargetMemoId ? ' active' : ''}`}
-              type="button"
-              onClick={switchFromSelection}
-              disabled={!switchTargetMemoId}
-            >
-              切り替え
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      <div className={`import-popup-overlay${deleteConfirmPopupOpen ? ' show' : ''}`}>
-        <div className="import-popup delete-confirm-popup" role="dialog" aria-modal="true" aria-label="削除確認">
-          <div className="import-popup-title">削除の確認</div>
-          <p className="import-popup-help">選択中の {pendingDeleteIds.length} 件を削除します。よろしいですか？</p>
-          <div className="import-popup-actions two-col">
-            <Button className="toggle-btn" type="button" onClick={closeDeleteConfirmOnly}>
-              キャンセル
-            </Button>
-            <Button className="toggle-btn active" type="button" onClick={executeDeleteMemos}>
-              削除する
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      <div className={`import-popup-overlay${memoCreatePopupOpen ? ' show' : ''}`}>
-        <div className="import-popup create-memo-popup" role="dialog" aria-modal="true" aria-label="メモ作成">
-          <div className="import-popup-title">{memoCreateMode === 'new' ? '新規メモ作成' : '複製メモ作成'}</div>
-          <input
-            className="memo-create-input"
-            type="text"
-            value={memoCreateName}
-            maxLength={UI_TOKENS.typography.memoNameMaxLength}
-            autoFocus
-            onChange={(event) => setMemoCreateName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && memoCreateName.trim()) {
-                event.preventDefault();
-                submitCreateMemo();
-              }
-            }}
-          />
-          <div className="import-popup-actions two-col">
-            <Button className="toggle-btn" type="button" onClick={() => setMemoCreatePopupOpen(false)}>
-              キャンセル
-            </Button>
-            <Button
-              className={`toggle-btn${memoCreateName.trim() ? ' active' : ''}`}
-              type="button"
-              onClick={submitCreateMemo}
-              disabled={!memoCreateName.trim()}
-            >
-              作成
-            </Button>
-          </div>
-        </div>
       </div>
 
       <Button
@@ -1061,24 +1018,280 @@ function App() {
       />
 
       <div className="app-shell">
-        <TopBar
-          topbarDropdownRef={topbarDropdownRef}
-          topbarDropdownOpen={topbarDropdownOpen}
-          activeMemoId={activeMemoId}
-          activeMemoName={activeMemo?.name ?? 'メモ 1'}
-          memoRecords={memoRecords}
-          onToggleDropdown={() => setTopbarDropdownOpen((prev) => !prev)}
-          onSwitchMemo={switchFromTopbarDropdown}
-          onDeleteMemo={deleteFromTopbarDropdown}
-          onOpenManage={openMemoManageDialog}
-          onOpenCreateNew={() => openCreateMemoPopup('new')}
-          onOpenDuplicate={() => openCreateMemoPopup('duplicate')}
-          onOpenImport={openImportDialog}
-        />
+        <div className="topbar-stack" ref={topbarAreaRef}>
+          <TopBar
+            topbarDropdownRef={topbarDropdownRef}
+            topbarDropdownOpen={topbarDropdownOpen}
+            activeMemoId={activeMemoId}
+            activeMemoTitle={activeMemoTitle}
+            memoRecords={memoRecords}
+            onToggleDropdown={toggleTopbarMemoDropdown}
+            onSwitchMemo={switchFromTopbarDropdown}
+            onDeleteMemo={deleteFromTopbarDropdown}
+            onOpenManage={openMemoManageDialog}
+            onOpenCreateNew={() => openCreateMemoPopup('new')}
+            onOpenDuplicate={() => openCreateMemoPopup('duplicate')}
+            onOpenImport={openImportDialog}
+          />
+
+          <div className="topbar-pulldown-layer">
+            {importPopupOpen ? (
+              <div className="import-popup topbar-pulldown" role="dialog" aria-label="JSONインポート">
+                <div className="import-popup-title">JSONインポート（タイトル + 9マス）</div>
+                <p className="import-popup-help">`title` と `cards` のみ反映します。新規作成か上書きを選択してください。</p>
+                <textarea
+                  className="import-json-input"
+                  value={importJsonText}
+                  onChange={(event) => {
+                    setImportJsonText(event.target.value);
+                    if (importError) setImportError('');
+                  }}
+                />
+                {importError ? <div className="import-popup-error">{importError}</div> : null}
+                <div className="import-popup-actions">
+                  <Button
+                    className="toggle-btn"
+                    type="button"
+                    onClick={() => {
+                      setImportPopupOpen(false);
+                      setImportError('');
+                    }}
+                  >
+                    キャンセル
+                  </Button>
+                  <Button className="toggle-btn" type="button" onClick={importOverwriteCurrentMemo}>
+                    上書き
+                  </Button>
+                  <Button className="toggle-btn active" type="button" onClick={importAsNewMemo}>
+                    新規作成
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {memoManagePopupOpen ? (
+              <div className="import-popup delete-popup topbar-pulldown" role="dialog" aria-label="メモ管理">
+                <div className="import-popup-title">メモ切り替え・管理</div>
+                <div className="memo-manage-toolbar">
+                  <select
+                    id="memoSortMode"
+                    className="memo-sort-select"
+                    value={memoSortMode}
+                    onChange={(event) => setMemoSortMode(event.target.value === 'name' ? 'name' : 'recent')}
+                  >
+                    <option value="recent">最近使った順</option>
+                    <option value="name">五十音順</option>
+                  </select>
+                  <Button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('new')}>
+                    新規作成
+                  </Button>
+                  <Button className="toggle-btn" type="button" onClick={() => openCreateMemoPopup('duplicate')}>
+                    複製
+                  </Button>
+                  <Button
+                    className={`toggle-btn${isMultiSelectMode ? ' active' : ''}`}
+                    type="button"
+                    onClick={() => askDeleteConfirmation(selectedMemoIds)}
+                    disabled={!isMultiSelectMode}
+                  >
+                    まとめて削除
+                  </Button>
+                </div>
+                <div className="delete-list">
+                  {sortedMemoRecords.map((record) => {
+                    const selected = selectedMemoIds.includes(record.id);
+                    const editingName = renameTargetMemoId === record.id;
+                    return (
+                      <div
+                        key={record.id}
+                        className={`memo-manage-row${selected ? ' selected' : ''}${switchTargetMemoId === record.id ? ' switch-target' : ''}`}
+                        onClick={(event) =>
+                          handleMemoManageRowSelection(record.id, {
+                            shiftKey: event.shiftKey,
+                            ctrlKey: event.ctrlKey,
+                            metaKey: event.metaKey,
+                          })
+                        }
+                      >
+                        <label
+                          className="memo-select-check"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              event.preventDefault();
+                              handleMemoManageRowSelection(record.id, {
+                                shiftKey: event.shiftKey,
+                                ctrlKey: event.ctrlKey,
+                                metaKey: event.metaKey,
+                              });
+                            }}
+                            onChange={() => {
+                              // no-op: selection is handled in onClick to support modifier keys
+                            }}
+                          />
+                        </label>
+                        <div className="memo-manage-left">
+                          {editingName ? (
+                            <input
+                              className="memo-create-input"
+                              type="text"
+                              value={renameMemoName}
+                              maxLength={UI_TOKENS.typography.memoNameMaxLength}
+                              autoFocus
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={(event) => setRenameMemoName(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' && renameMemoName.trim()) {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  submitRenameMemo();
+                                }
+                                if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  cancelRenameMemo();
+                                }
+                              }}
+                            />
+                          ) : (
+                            <span className="memo-name-text">{getMemoTitle(record)}</span>
+                          )}
+                        </div>
+                        <div className="memo-row-actions">
+                          {editingName ? (
+                            <>
+                              <Button
+                                className={`toggle-btn memo-row-icon-btn${renameMemoName.trim() ? ' active' : ''}`}
+                                type="button"
+                                aria-label="メモ名を保存"
+                                title="保存"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  submitRenameMemo();
+                                }}
+                                disabled={!renameMemoName.trim()}
+                              >
+                                保存
+                              </Button>
+                              <Button
+                                className="toggle-btn memo-row-icon-btn"
+                                type="button"
+                                aria-label="メモ名編集をキャンセル"
+                                title="キャンセル"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  cancelRenameMemo();
+                                }}
+                              >
+                                取消
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              className="toggle-btn memo-row-icon-btn"
+                              type="button"
+                              aria-label="このメモの名前を変更"
+                              title="名前変更"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                startRenameMemo(record.id);
+                              }}
+                            >
+                              名前
+                            </Button>
+                          )}
+                          <Button
+                            className="toggle-btn memo-row-icon-btn"
+                            type="button"
+                            aria-label="このメモを削除"
+                            title="削除"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              askDeleteConfirmation([record.id]);
+                            }}
+                          >
+                            🗑
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {deleteError ? <div className="import-popup-error">{deleteError}</div> : null}
+                <div className="import-popup-actions two-col">
+                  <Button className="toggle-btn" type="button" onClick={closeDeletePopups}>
+                    キャンセル
+                  </Button>
+                  <Button
+                    className={`toggle-btn${switchTargetMemoId ? ' active' : ''}`}
+                    type="button"
+                    onClick={switchFromSelection}
+                    disabled={!switchTargetMemoId}
+                  >
+                    切り替え
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {deleteConfirmPopupOpen ? (
+              <div className="import-popup delete-confirm-popup topbar-pulldown" role="dialog" aria-label="削除確認">
+                <div className="import-popup-title">削除の確認</div>
+                <p className="import-popup-help">選択中の {pendingDeleteIds.length} 件を削除します。よろしいですか？</p>
+                <div className="import-popup-actions two-col">
+                  <Button className="toggle-btn" type="button" onClick={closeDeleteConfirmOnly}>
+                    キャンセル
+                  </Button>
+                  <Button className="toggle-btn active" type="button" onClick={executeDeleteMemos}>
+                    削除する
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {memoCreatePopupOpen ? (
+              <div className="import-popup create-memo-popup topbar-pulldown" role="dialog" aria-label="メモ作成">
+                <div className="import-popup-title">{memoCreateMode === 'new' ? '新規メモ作成' : '複製メモ作成'}</div>
+                <input
+                  className="memo-create-input"
+                  type="text"
+                  value={memoCreateName}
+                  maxLength={UI_TOKENS.typography.memoNameMaxLength}
+                  autoFocus
+                  onChange={(event) => setMemoCreateName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && memoCreateName.trim()) {
+                      event.preventDefault();
+                      submitCreateMemo();
+                    }
+                  }}
+                />
+                <div className="import-popup-actions two-col">
+                  <Button className="toggle-btn" type="button" onClick={() => setMemoCreatePopupOpen(false)}>
+                    キャンセル
+                  </Button>
+                  <Button
+                    className={`toggle-btn${memoCreateName.trim() ? ' active' : ''}`}
+                    type="button"
+                    onClick={submitCreateMemo}
+                    disabled={!memoCreateName.trim()}
+                  >
+                    作成
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
 
         <div className={`layout${activeResizer ? ' is-resizing' : ''}`} style={layoutStyle}>
         <LeftSidebar
-          activeMemoName={activeMemo?.name ?? 'メモ 1'}
           infoInner={infoInner}
           infoFont={infoFont}
           currentPt={currentPt}
@@ -1117,6 +1330,8 @@ function App() {
           onChangeScale={(value) => setScalePct(normalizeScale(value))}
           onExportWebPng={() => void handleExportWebPng()}
           onExportPrintPdf={() => void handleExportPrintPdf()}
+          onCopyPlainText={() => void handleCopyPlainText()}
+          onCopyJson={() => void handleCopyJson()}
           onPrintBrowser={() => window.print()}
           customPxMin={UI_TOKENS.sizing.customPxMin}
           customMmMin={UI_TOKENS.sizing.customMmMin}
@@ -1139,6 +1354,7 @@ function App() {
           onMouseDownCanvas={handleCanvasMouseDown}
           onMouseMoveCanvas={handleMouseMove}
           onMouseUpCanvas={handleMouseUp}
+          onWheelCanvas={handleCanvasWheel}
           onTouchStartCanvas={handleCanvasTouchStart}
           onTouchMoveCanvas={handleCanvasTouchMove}
           onTouchEndCanvas={handleCanvasTouchEnd}
@@ -1161,9 +1377,7 @@ function App() {
           titlePos={titlePos}
           titleEditing={titleEditing}
           titleVisible={titleVisible}
-          currentPt={currentPt}
           cardMargin={cardMargin}
-          ptToScreenPx={ptToScreenPx}
           onStartTitleEdit={() => {
             setActiveEditIndex(null);
             setTitleEditing(true);

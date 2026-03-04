@@ -6,7 +6,7 @@ type TopBarProps = {
   topbarDropdownRef: RefObject<HTMLDivElement>;
   topbarDropdownOpen: boolean;
   activeMemoId: string;
-  activeMemoName: string;
+  activeMemoTitle: string;
   memoRecords: MemoRecord[];
   onToggleDropdown: () => void;
   onSwitchMemo: (memoId: string) => void;
@@ -21,7 +21,7 @@ export function TopBar({
   topbarDropdownRef,
   topbarDropdownOpen,
   activeMemoId,
-  activeMemoName,
+  activeMemoTitle,
   memoRecords,
   onToggleDropdown,
   onSwitchMemo,
@@ -35,14 +35,14 @@ export function TopBar({
     <header className="memo-topbar" aria-label="メモ管理バー">
       <div className="memo-topbar-dropdown" ref={topbarDropdownRef}>
         <Button
-          className="memo-topbar-select"
+          className="toggle-btn memo-topbar-btn memo-topbar-select"
           type="button"
           aria-haspopup="listbox"
           aria-expanded={topbarDropdownOpen}
           aria-label="メモ切り替え"
           onClick={onToggleDropdown}
         >
-          <span className="memo-topbar-select-text">{activeMemoName}</span>
+          <span className="memo-topbar-select-text">{activeMemoTitle}</span>
           <span className="memo-topbar-caret">▾</span>
         </Button>
 
@@ -50,7 +50,7 @@ export function TopBar({
           {memoRecords.map((record) => (
             <div key={record.id} className={`memo-topbar-option${record.id === activeMemoId ? ' active' : ''}`}>
               <Button className="memo-topbar-option-name" type="button" onClick={() => onSwitchMemo(record.id)}>
-                {record.name}
+                {record.snapshot.titleText.trim() || record.name || '無題メモ'}
               </Button>
               <Button className="memo-topbar-option-delete" type="button" aria-label="このメモを削除" title="削除" onClick={() => onDeleteMemo(record.id)}>
                 🗑

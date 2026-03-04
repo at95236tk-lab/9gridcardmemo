@@ -2,7 +2,6 @@ import type { PaperSize, SizeGroup, TitlePos } from '../../types/editor';
 import { Button } from '../atoms/Button';
 
 type LeftSidebarProps = {
-  activeMemoName: string;
   infoInner: string;
   infoFont: string;
   currentPt: number;
@@ -41,6 +40,8 @@ type LeftSidebarProps = {
   onChangeScale: (value: number) => void;
   onExportWebPng: () => void;
   onExportPrintPdf: () => void;
+  onCopyPlainText: () => void;
+  onCopyJson: () => void;
   onPrintBrowser: () => void;
   customPxMin: number;
   customMmMin: number;
@@ -48,7 +49,6 @@ type LeftSidebarProps = {
 };
 
 export function LeftSidebar({
-  activeMemoName,
   infoInner,
   infoFont,
   currentPt,
@@ -87,6 +87,8 @@ export function LeftSidebar({
   onChangeScale,
   onExportWebPng,
   onExportPrintPdf,
+  onCopyPlainText,
+  onCopyJson,
   onPrintBrowser,
   customPxMin,
   customMmMin,
@@ -98,7 +100,7 @@ export function LeftSidebar({
         <div>
           <div className="app-title">A4 カードレイアウト</div>
           <div className="app-info">
-            メモ：<em>{activeMemoName}</em>
+            ページタイトル：<em>{titleText.trim() || '無題メモ'}</em>
             <br />
             外：A4　内：<em>{infoInner}</em>
             <br />
@@ -167,7 +169,8 @@ export function LeftSidebar({
         </div>
 
         <div className="section">
-          <div className="sec-label">書体</div>
+          <div className="sec-label">タイポグラフィ</div>
+          <div className="group-name">書体</div>
           <div className="toggle-row">
             <Button className={`toggle-btn${currentFont === 'sans' ? ' active' : ''}`} onClick={() => onSelectFont('sans')} type="button">
               ゴシック
@@ -176,10 +179,7 @@ export function LeftSidebar({
               明朝
             </Button>
           </div>
-        </div>
-
-        <div className="section">
-          <div className="sec-label">フォントサイズ</div>
+          <div className="group-name">フォントサイズ</div>
           <div className="slider-row">
             <input
               className="ui-range"
@@ -188,7 +188,7 @@ export function LeftSidebar({
               max={fontPtMax}
               step={fontPtStep}
               value={currentPt}
-              onChange={(event) => onChangePt(Number.parseInt(event.target.value, 10))}
+              onChange={(event) => onChangePt(Number.parseFloat(event.target.value))}
             />
             <span className="slider-val">{currentPt} pt</span>
           </div>
@@ -211,7 +211,7 @@ export function LeftSidebar({
         </div>
 
         <div className="section">
-          <div className="pdf-group sidebar-gap-top-sm">
+          <div className="pdf-group">
             <div className="pdf-label">データ書き出し</div>
             <Button className="action-btn" onClick={onExportWebPng} type="button">
               ⬇ Web 用 PNG（72dpi）
@@ -219,10 +219,18 @@ export function LeftSidebar({
             <Button className="action-btn" onClick={onExportPrintPdf} type="button">
               ⬇ 印刷用（300dpi）
             </Button>
+            <div className="export-copy-row">
+              <Button className="action-btn" onClick={onCopyPlainText} type="button">
+                テキスト
+              </Button>
+              <Button className="action-btn" onClick={onCopyJson} type="button">
+                JSON
+              </Button>
+            </div>
+            <Button className="action-btn dim" onClick={onPrintBrowser} type="button">
+              🖨 ブラウザ印刷
+            </Button>
           </div>
-          <Button className="action-btn dim sidebar-gap-top-sm" onClick={onPrintBrowser} type="button">
-            🖨 ブラウザ印刷
-          </Button>
         </div>
       </div>
     </aside>

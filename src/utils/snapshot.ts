@@ -36,7 +36,7 @@ export function buildDefaultSnapshot(): EditorSnapshot {
     currentPt: 5,
     currentFont: 'sans',
     cards: [...SAMPLE_TEXTS],
-    titleText: 'ページタイトル',
+    titleText: '長野・信州 旅の最終確定ログ',
     titleVisible: true,
     titlePos: 'top-left',
   };
@@ -100,10 +100,15 @@ export function normalizeSnapshot(input: unknown): EditorSnapshot {
 
 export function createMemoRecord(snapshot?: EditorSnapshot, name?: string): MemoRecord {
   const now = Date.now();
+  const normalizedSnapshot = normalizeSnapshot(snapshot ?? buildDefaultSnapshot());
+  const unifiedName = name?.trim() ? name.trim() : normalizedSnapshot.titleText.trim() || '無題メモ';
   return {
     id: createMemoId(),
-    name: name?.trim() ? name.trim() : 'メモ 1',
-    snapshot: normalizeSnapshot(snapshot ?? buildDefaultSnapshot()),
+    name: unifiedName,
+    snapshot: {
+      ...normalizedSnapshot,
+      titleText: unifiedName,
+    },
     createdAt: now,
     updatedAt: now,
   };
@@ -111,7 +116,7 @@ export function createMemoRecord(snapshot?: EditorSnapshot, name?: string): Memo
 
 export function createNextMemoName(records: MemoRecord[]) {
   let index = 1;
-  while (records.some((record) => record.name === `メモ ${index}`)) {
+  while (records.some((record) => (record.snapshot.titleText.trim() || record.name) === `メモ ${index}`)) {
     index += 1;
   }
   return `メモ ${index}`;
