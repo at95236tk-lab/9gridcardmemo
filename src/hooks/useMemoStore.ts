@@ -47,23 +47,27 @@ export function useMemoStore() {
       if (cancelled) return;
 
       if (remoteRecords === null) {
+        console.warn('[useMemoStore] hydration failed — remote sync disabled');
         remoteReadyRef.current = false;
         return;
       }
 
       if (remoteRecords.length > 0) {
+        console.log('[useMemoStore] hydration OK — loaded', remoteRecords.length, 'remote records');
         setMemoRecords(remoteRecords);
         previousSyncedRecordsRef.current = remoteRecords;
         remoteReadyRef.current = true;
         return;
       }
 
+      console.log('[useMemoStore] remote empty — uploading local records');
       const initialLocalRecords = initialRecordsRef.current;
       await upsertRemoteMemos(ownerKey, initialLocalRecords);
       if (cancelled) return;
 
       previousSyncedRecordsRef.current = initialLocalRecords;
       remoteReadyRef.current = true;
+      console.log('[useMemoStore] initial upload done');
     };
 
     void hydrateFromRemote();
@@ -74,7 +78,10 @@ export function useMemoStore() {
   }, [ownerKey]);
 
   useEffect(() => {
-    if (!remoteReadyRef.current) return;
+    if (!remoteReadyRef.current) {
+      console.log('[useMemoStore] sync skipped — remote not ready yet');
+      return;
+    }
 
     const previousRecords = previousSyncedRecordsRef.current;
     const nextRecords = memoRecords;
@@ -100,6 +107,7 @@ export function useMemoStore() {
     previousSyncedRecordsRef.current = nextRecords;
     if (upsertTargets.length === 0 && deleteTargets.length === 0) return;
 
+    console.log('[useMemoStore] changes detected — upsert:', upsertTargets.map((r) => r.name), 'delete:', deleteTargets);
     pendingUpsertRef.current = upsertTargets;
     pendingDeleteRef.current = deleteTargets;
 
@@ -113,10 +121,12 @@ export function useMemoStore() {
       pendingUpsertRef.current = [];
       pendingDeleteRef.current = [];
       if (toUpsert.length === 0 && toDelete.length === 0) return;
+      console.log('[useMemoStore] flushing sync — upsert:', toUpsert.length, 'delete:', toDelete.length);
       syncQueueRef.current = syncQueueRef.current
         .then(async () => {
           await upsertRemoteMemos(ownerKey, toUpsert);
           await deleteRemoteMemos(ownerKey, toDelete);
+          console.log('[useMemoStore] sync complete');
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
