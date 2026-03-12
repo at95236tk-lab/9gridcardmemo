@@ -24,6 +24,8 @@ export function useMemoStore() {
   const remoteReadyRef = useRef(false);
   const syncQueueRef = useRef(Promise.resolve());
   const syncDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingUpsertRef = useRef<MemoRecord[]>([]);
+  const pendingDeleteRef = useRef<string[]>([]);
 
   const initialSnapshot = useMemo<EditorSnapshot>(() => {
     const current = initialMemoStore.records.find((item) => item.id === initialMemoStore.activeMemoId);
@@ -98,21 +100,33 @@ export function useMemoStore() {
     previousSyncedRecordsRef.current = nextRecords;
     if (upsertTargets.length === 0 && deleteTargets.length === 0) return;
 
+    pendingUpsertRef.current = upsertTargets;
+    pendingDeleteRef.current = deleteTargets;
+
     if (syncDebounceTimerRef.current) {
       clearTimeout(syncDebounceTimerRef.current);
     }
 
-    syncDebounceTimerRef.current = setTimeout(() => {
+    const flushSync = () => {
+      const toUpsert = pendingUpsertRef.current;
+      const toDelete = pendingDeleteRef.current;
+      pendingUpsertRef.current = [];
+      pendingDeleteRef.current = [];
+      if (toUpsert.length === 0 && toDelete.length === 0) return;
       syncQueueRef.current = syncQueueRef.current
         .then(async () => {
-          await upsertRemoteMemos(ownerKey, upsertTargets);
-          await deleteRemoteMemos(ownerKey, deleteTargets);
+          await upsertRemoteMemos(ownerKey, toUpsert);
+          await deleteRemoteMemos(ownerKey, toDelete);
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
           console.error('[useMemoStore] failed to sync memo records', message);
         });
+    };
+
+    syncDebounceTimerRef.current = setTimeout(() => {
       syncDebounceTimerRef.current = null;
+      flushSync();
     }, REMOTE_SYNC_DEBOUNCE_MS);
 
     return () => {
@@ -121,6 +135,35 @@ export function useMemoStore() {
       syncDebounceTimerRef.current = null;
     };
   }, [memoRecords, ownerKey]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'hidden') return;
+      if (syncDebounceTimerRef.current) {
+        clearTimeout(syncDebounceTimerRef.current);
+        syncDebounceTimerRef.current = null;
+      }
+      const toUpsert = pendingUpsertRef.current;
+      const toDelete = pendingDeleteRef.current;
+      pendingUpsertRef.current = [];
+      pendingDeleteRef.current = [];
+      if (toUpsert.length === 0 && toDelete.length === 0) return;
+      syncQueueRef.current = syncQueueRef.current
+        .then(async () => {
+          await upsertRemoteMemos(ownerKey, toUpsert);
+          await deleteRemoteMemos(ownerKey, toDelete);
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error('[useMemoStore] failed to flush sync on hide', message);
+        });
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [ownerKey]);
 
   return {
     memoRecords,
